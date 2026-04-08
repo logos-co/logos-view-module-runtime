@@ -22,10 +22,59 @@ future Logos host application can link the same library and use the same
     that socket via `setViewModuleSocket(name, socket)`.
 
 - **`ui-host`** — standalone executable. Loads a single Qt plugin
-  (`--path <plugin.so>`), wraps it in a `ViewModuleProxy` that forwards
-  `callMethod(name, args)` via `QMetaObject::invokeMethod` with `QMetaType`
-  coercion, exposes the proxy on a `QRemoteObjectHost` at the socket given by
-  `--socket`, and prints `READY` once it's listening.
+  (`--path <plugin.so>`), calls `initLogos(LogosAPI*)` on it via reflection
+  (`QMetaObject::invokeMethod`), and then exposes a QObject on a
+  `QRemoteObjectHost` at the socket given by `--socket`. Remoting strategy:
+  - **Typed remoting (preferred)**: if the plugin declares the
+    `LogosViewPlugin` interface (from `logos-plugin-qt`) via
+    `Q_INTERFACES(LogosViewPlugin)` so that `qobject_cast<LogosViewPlugin*>`
+    succeeds, `ui-host` calls
+    `viewPlugin->enableRemoting(&host)`. The generated
+    `<Foo>ViewPluginBase` (produced by `logos_module(REP_FILE …)` in
+    `logos-plugin-qt`) invokes `host->enableRemoting<FooSourceAPI>(backend)`
+    so typed replicas on the client side reach the `Valid` state. The
+    remoted object is `viewPlugin->viewObject()`.
+  - **Dynamic remoting (fallback)**: for plugins without a `.rep` /
+    `LogosViewPlugin` implementation, `ui-host` falls back to
+    `host.enableRemoting(pluginObject, moduleName)`, which propagates all
+    `Q_INVOKABLE`s, slots, signals, and `Q_PROPERTY`s (with `NOTIFY`) via a
+    `QRemoteObjectDynamicReplica` on the client side.
+
+  Any `Q_PROPERTY` on the remoted object whose value is a
+  `QAbstractItemModel*` is additionally remoted as a child source named
+  `<moduleName>/<propertyName>`. Prints `READY` once it's listening.
+
+## View object convention
+
+A view module plugin keeps its plugin-lifecycle class separate from the
+QObject that QML actually talks to. The preferred path is to inherit the
+generated `<Foo>ViewPluginBase` from `logos-plugin-qt` (produced by
+`logos_module(REP_FILE my_view.rep …)`), which implements `LogosViewPlugin`
+and wires typed remoting:
+
+```cpp
+class MyPlugin : public MyViewPluginBase {
+    Q_OBJECT
+    Q_PLUGIN_METADATA(IID "co.logos.MyPlugin" FILE "metadata.json")
+    Q_INTERFACES(PluginInterface LogosViewPlugin)
+public:
+    Q_INVOKABLE void initLogos(LogosAPI* api) {
+        m_backend = new MyBackend(api, this);
+    }
+    QObject* viewObject() override { return m_backend; }
+private:
+    MyBackend* m_backend = nullptr;
+};
+```
+
+`ui-host` calls `viewPlugin->enableRemoting(&host)`, which internally does
+`host->enableRemoting<MySourceAPI>(m_backend)` using the typed source
+generated from the `.rep` file. QML on the parent side talks to
+`MyBackend` via a typed replica.
+
+For plugins without a `.rep` file (no `LogosViewPlugin` implementation),
+`ui-host` falls back to dynamic remoting of the plugin object itself — this
+keeps legacy modules working unchanged.
 
 ## Architecture
 
@@ -33,7 +82,7 @@ future Logos host application can link the same library and use the same
 ┌────────────────────────────┐         ┌──────────────────────────┐
 │ Host app (basecamp / etc.) │         │ ui-host (child process)  │
 │                            │         │                          │
-│   QML  ──Logos.callModule──▶         │   ViewModuleProxy        │
+│   QML  ──logos.callModule──▶         │   ViewModuleProxy        │
 │           │                │ QRO     │     │                    │
 │   LogosQmlBridge ──────────┼────────▶│     ▼                    │
 │           │                │ local   │   QPluginLoader          │
@@ -113,14 +162,16 @@ cp ${logosViewModuleRuntime}/bin/ui-host $out/bin/ui-host
 ```cpp
 auto* api = new LogosAPI(/* ... */);
 auto* bridge = new LogosQmlBridge(api, this);
-engine.rootContext()->setContextProperty("Logos", bridge);
+engine.rootContext()->setContextProperty("logos", bridge);
 
 // For a view module, spawn its host process and wire the bridge to its socket
-auto* host = new ViewModuleHost("my_view_module", "/path/to/my_view_module.so", this);
+auto* host = new ViewModuleHost(this);
 connect(host, &ViewModuleHost::ready, this, [bridge, host] {
-    bridge->setViewModuleSocket(host->moduleName(), host->socketName());
+    bridge->setViewModuleSocket("my_view_module", host->socketName());
 });
-host->start();
+if (!host->spawn("my_view_module", "/path/to/my_view_module.so")) {
+    qWarning() << "Failed to start view module host";
+}
 ```
 
 From QML:
@@ -129,15 +180,19 @@ From QML:
 import QtQuick
 Item {
     Component.onCompleted: {
-        const result = JSON.parse(Logos.callModule("my_view_module", "getStatus", []));
-        console.log(result.value);
+        // Prefer the async form for view modules — the sync callModule() blocks
+        // the QML/JS event loop while waiting for the QRO reply.
+        logos.callModuleAsync("my_view_module", "getStatus", [], function(payload) {
+            const result = JSON.parse(payload);
+            console.log(result.value);
+        });
     }
 }
 ```
 
 ## Dependencies
 
-- Qt 6: `Core`, `Qml`, `Quick`, `RemoteObjects`
+- Qt 6: `Core`, `Qml`, `RemoteObjects`
 - `logos-cpp-sdk` (for `LogosAPI` / `logos_api.h`)
 
 That's it — deliberately no dependency on `logos-liblogos`, `logos-module`, or
