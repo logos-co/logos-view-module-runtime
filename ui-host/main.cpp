@@ -83,6 +83,9 @@ int main(int argc, char* argv[])
     // state. Without this, dynamic (name-based) remoting would use a
     // different signature hash and typed replicas would stall in Default.
     auto* viewPlugin = qobject_cast<LogosViewPlugin*>(pluginObject);
+    if (!viewPlugin) {
+        viewPlugin = dynamic_cast<LogosViewPlugin*>(pluginObject);
+    }
     QObject* remoteTarget = viewPlugin ? viewPlugin->viewObject() : pluginObject;
     if (!remoteTarget) remoteTarget = pluginObject;
 
