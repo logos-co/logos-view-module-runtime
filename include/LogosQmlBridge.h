@@ -73,6 +73,19 @@ public:
     // True once the view module's replica is Valid (source meta received).
     Q_INVOKABLE bool isViewModuleReady(const QString& moduleName) const;
 
+    // Watch a QRemoteObjectPendingCall returned by a replica slot call and
+    // invoke callbacks with the result. Replaces QtRemoteObjects.watch() so
+    // QML plugins don't need to import QtRemoteObjects (keeping the sandbox
+    // locked down).
+    //
+    // Usage:
+    //   logos.watch(backend.add(1, 2),
+    //     function(value) { display.text = value },
+    //     function(error) { console.log(error) })
+    Q_INVOKABLE void watch(const QVariant& pendingCall,
+                           QJSValue onSuccess,
+                           QJSValue onError = QJSValue());
+
     // Called by the host application during setup.
     void setViewModuleSocket(const QString& moduleName, const QString& socketName);
     void setViewReplicaPlugin(const QString& moduleName, const QString& pluginPath);

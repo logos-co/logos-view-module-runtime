@@ -9,6 +9,7 @@
 #include <QQmlEngine>
 #include <QRemoteObjectNode>
 #include <QRemoteObjectReplica>
+#include <QRemoteObjectPendingCall>
 #include <QAbstractItemModelReplica>
 #include <QPluginLoader>
 #include <QFileInfo>
@@ -99,6 +100,32 @@ void LogosQmlBridge::callModuleAsync(const QString& module,
                 return;
             }
             invokeCallback(LogosQmlBridge::serializeResultForTesting(result));
+        });
+}
+
+void LogosQmlBridge::watch(const QVariant& pendingCall,
+                           QJSValue onSuccess,
+                           QJSValue onError)
+{
+    auto call = pendingCall.value<QRemoteObjectPendingCall>();
+
+    if (call.isFinished()) {
+        if (onSuccess.isCallable()) {
+            onSuccess.call(QJSValueList() << QJSValue(call.returnValue().toString()));
+        }
+        return;
+    }
+
+    auto* watcher = new QRemoteObjectPendingCallWatcher(call, this);
+    connect(watcher, &QRemoteObjectPendingCallWatcher::finished, this,
+        [onSuccess, onError, watcher]() mutable {
+            QVariant rv = watcher->returnValue();
+            if (rv.isValid() && onSuccess.isCallable()) {
+                onSuccess.call(QJSValueList() << QJSValue(rv.toString()));
+            } else if (!rv.isValid() && onError.isCallable()) {
+                onError.call(QJSValueList() << QJSValue(QStringLiteral("call failed")));
+            }
+            watcher->deleteLater();
         });
 }
 
