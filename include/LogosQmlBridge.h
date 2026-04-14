@@ -107,9 +107,28 @@ public:
     QString viewModuleSocket(const QString& moduleName) const;
     QString viewReplicaPluginPath(const QString& moduleName) const;
 
+    // Subscribe to events emitted by core (non-view) modules. When the
+    // module emits an event, the moduleEventReceived signal fires.
+    //
+    // Usage:
+    //   Component.onCompleted: logos.onModuleEvent("calc_module", "resultReady")
+    //   Connections {
+    //       target: logos
+    //       function onModuleEventReceived(moduleName, eventName, data) {
+    //           if (eventName === "resultReady")
+    //               console.log("Got result:", JSON.stringify(data))
+    //       }
+    //   }
+    //
+    // Returns true if the subscription succeeded.
+    Q_INVOKABLE bool onModuleEvent(const QString& moduleName, const QString& eventName);
+
 signals:
     void viewModuleReadyChanged(const QString& moduleName, bool ready);
     void viewModuleCrashed(const QString& moduleName);
+    void moduleEventReceived(const QString& moduleName,
+                             const QString& eventName,
+                             const QVariantList& data);
 
 private:
     void dropViewModuleCaches(const QString& moduleName);
