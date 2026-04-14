@@ -20,6 +20,7 @@
 
 #include "logos_api.h"
 #include "logos_api_client.h"
+#include "logos_object.h"
 
 LogosQmlBridge::LogosQmlBridge(LogosAPI* api, QObject* parent)
     : QObject(parent)
@@ -256,6 +257,37 @@ void LogosQmlBridge::notifyViewModuleCrashed(const QString& moduleName)
     dropViewModuleCaches(moduleName);
     emit viewModuleReadyChanged(moduleName, false);
     emit viewModuleCrashed(moduleName);
+}
+
+bool LogosQmlBridge::onModuleEvent(const QString& moduleName, const QString& eventName)
+{
+    if (!m_logosAPI) {
+        qWarning() << "LogosQmlBridge::onModuleEvent: LogosAPI not available";
+        return false;
+    }
+
+    LogosAPIClient* client = m_logosAPI->getClient(moduleName);
+    if (!client || !client->isConnected()) {
+        qWarning() << "LogosQmlBridge::onModuleEvent:" << moduleName << "not connected";
+        return false;
+    }
+
+    LogosObject* obj = client->requestObject(moduleName);
+    if (!obj) {
+        qWarning() << "LogosQmlBridge::onModuleEvent: could not get object for" << moduleName;
+        return false;
+    }
+
+    QPointer<LogosQmlBridge> self(this);
+    QString mod = moduleName;
+    client->onEvent(obj, eventName, [self, mod](const QString& event, const QVariantList& data) {
+        if (self) {
+            emit self->moduleEventReceived(mod, event, data);
+        }
+    });
+
+    qDebug() << "LogosQmlBridge: subscribed to" << moduleName << "::" << eventName;
+    return true;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

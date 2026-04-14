@@ -296,6 +296,24 @@ private slots:
         QVERIFY(!bridge.isViewModuleReady("foo"));
     }
 
+    // ── Module event subscription ─────────────────────────────────────
+
+    void onModuleEvent_nullLogosAPI_returnsFalse()
+    {
+        LogosQmlBridge bridge(nullptr);
+        QVERIFY(!bridge.onModuleEvent("calc_module", "resultReady"));
+    }
+
+    void onModuleEvent_nullLogosAPI_doesNotEmitSignal()
+    {
+        LogosQmlBridge bridge(nullptr);
+        QSignalSpy spy(&bridge, &LogosQmlBridge::moduleEventReceived);
+        bridge.onModuleEvent("calc_module", "resultReady");
+        QCOMPARE(spy.count(), 0);
+    }
+
+    // ── Crash notification ──────────────────────────────────────────────
+
     void notifyViewModuleCrashed_dropsSocketMapping()
     {
         LogosQmlBridge bridge(nullptr);
