@@ -110,19 +110,28 @@ void LogosQmlBridge::watch(const QVariant& pendingCall,
 {
     auto call = pendingCall.value<QRemoteObjectPendingCall>();
 
+    // Convert QtRO's returnValue (a QVariant) to a JS value preserving its
+    // type (int → number, bool → bool, QString → string, QVariantMap → object,
+    // …).
+    auto toJs = [this](const QVariant& v) -> QJSValue {
+        if (auto* engine = qjsEngine(this))
+            return engine->toScriptValue(v);
+        return QJSValue(v.toString());
+    };
+
     if (call.isFinished()) {
         if (onSuccess.isCallable()) {
-            onSuccess.call(QJSValueList() << QJSValue(call.returnValue().toString()));
+            onSuccess.call(QJSValueList() << toJs(call.returnValue()));
         }
         return;
     }
 
     auto* watcher = new QRemoteObjectPendingCallWatcher(call, this);
     connect(watcher, &QRemoteObjectPendingCallWatcher::finished, this,
-        [onSuccess, onError, watcher]() mutable {
+        [onSuccess, onError, watcher, toJs]() mutable {
             QVariant rv = watcher->returnValue();
             if (rv.isValid() && onSuccess.isCallable()) {
-                onSuccess.call(QJSValueList() << QJSValue(rv.toString()));
+                onSuccess.call(QJSValueList() << toJs(rv));
             } else if (!rv.isValid() && onError.isCallable()) {
                 onError.call(QJSValueList() << QJSValue(QStringLiteral("call failed")));
             }
