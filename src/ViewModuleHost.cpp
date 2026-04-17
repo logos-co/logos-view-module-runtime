@@ -1,7 +1,6 @@
 #include "ViewModuleHost.h"
 
 #include <QCoreApplication>
-#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QUuid>
@@ -10,76 +9,6 @@
 ViewModuleHost::ViewModuleHost(QObject* parent)
     : QObject(parent)
 {
-}
-
-static QString leftUtf8Bytes(const QString& value, int maxBytes)
-{
-    if (maxBytes <= 0)
-        return QString();
-
-    const QByteArray utf8 = value.toUtf8();
-    if (utf8.size() <= maxBytes)
-        return value;
-
-    QByteArray truncated = utf8.left(maxBytes);
-    while (!truncated.isEmpty()) {
-        const QString decoded =
-            QString::fromUtf8(truncated.constData(), truncated.size());
-        if (decoded.toUtf8().size() == truncated.size())
-            return decoded;
-        truncated.chop(1);
-    }
-    return QString();
-}
-
-QString ViewModuleHost::buildSocketName(const QString& moduleName,
-                                        const QString& uniqueId,
-                                        const QString& tempPath)
-{
-    constexpr int kHashHexLen = 16;
-
-    const QByteArray prefixUtf8 = QByteArrayLiteral("logos_view_");
-    const QByteArray suffixUtf8 = QByteArrayLiteral("_") + uniqueId.toUtf8();
-    const QByteArray baseUtf8 = prefixUtf8 + moduleName.toUtf8() + suffixUtf8;
-
-    // sockaddr_un.sun_path is 104 bytes on macOS/BSD.
-    // Full path: <tempPath>/<socketName> plus Qt creates a ".lock" sibling.
-    const int tempBytes = tempPath.toUtf8().size() + 1; // +1 for path separator
-    const int maxBytes = 104 - tempBytes - 5 - 1;       // -5 ".lock", -1 NUL
-
-    if (baseUtf8.size() <= maxBytes)
-        return QString::fromUtf8(baseUtf8);
-
-    const QByteArray moduleHashBytes =
-        QCryptographicHash::hash(moduleName.toUtf8(), QCryptographicHash::Sha1)
-            .toHex()
-            .left(kHashHexLen);
-    const QString moduleHash = QString::fromLatin1(moduleHashBytes);
-
-    // Minimum result when we drop the readable prefix and the logos_view_
-    // prefix: just "<hash>_<uniqueId>".
-    const int minimalBytes = kHashHexLen + suffixUtf8.size();
-    if (maxBytes < minimalBytes) {
-        // Extreme case: even hash+suffix doesn't fit. Truncate the hash.
-        const int hashBudget = qMax(4, maxBytes - suffixUtf8.size());
-        return QString::fromLatin1(moduleHashBytes.left(hashBudget))
-               + QString::fromUtf8(suffixUtf8);
-    }
-
-    // Fixed overhead: "logos_view_" + "_" + hash + suffix
-    const int fixedBytes = prefixUtf8.size() + 1 + kHashHexLen + suffixUtf8.size();
-    if (maxBytes < fixedBytes) {
-        return moduleHash + QString::fromUtf8(suffixUtf8);
-    }
-
-    const int modulePrefixBytes = maxBytes - fixedBytes;
-    const QString modulePrefix = leftUtf8Bytes(moduleName, modulePrefixBytes);
-
-    if (modulePrefix.isEmpty())
-        return QStringLiteral("logos_view_") + moduleHash + QString::fromUtf8(suffixUtf8);
-
-    return QStringLiteral("logos_view_%1_%2%3")
-        .arg(modulePrefix, moduleHash, QString::fromUtf8(suffixUtf8));
 }
 
 ViewModuleHost::~ViewModuleHost()
@@ -99,7 +28,7 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath)
     m_readyEmitted = false;
 
     QString uniqueId = QUuid::createUuid().toString(QUuid::Id128).left(8);
-    m_socketName = buildSocketName(moduleName, uniqueId, QDir::tempPath());
+    m_socketName = QStringLiteral("logos_view_%1_%2").arg(moduleName, uniqueId);
 
     QString appDir = QCoreApplication::applicationDirPath();
     QString uiHostPath = QDir(appDir).filePath("ui-host");
