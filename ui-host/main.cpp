@@ -23,6 +23,8 @@
 int main(int argc, char* argv[])
 {
     QCoreApplication app(argc, argv);
+    app.setOrganizationName("Logos");
+    app.setOrganizationDomain("logos.co");
     app.setApplicationName("ui-host");
 
     QCommandLineParser parser;
