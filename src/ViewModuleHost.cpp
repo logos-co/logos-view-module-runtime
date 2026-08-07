@@ -8,6 +8,9 @@
 #include <QPointer>
 #include <QUuid>
 #include <QDebug>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 ViewModuleHost::ViewModuleHost(QObject* parent)
     : QObject(parent)
@@ -81,6 +84,28 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
     QProcess* process = new QProcess(this);
     m_process = process;
 
+#ifdef Q_OS_WIN
+    // See stop(): terminating a windowless child on Windows needs its main
+    // THREAD id, not its pid. The modifier runs before CreateProcess, so
+    // dwThreadId is not populated yet -- capture the pointer and read it in
+    // started().
+    m_procInfo = nullptr;
+    m_mainThreadId = 0;
+    process->setCreateProcessArgumentsModifier(
+        [this](QProcess::CreateProcessArguments* args) {
+            m_procInfo = args->processInformation;
+        });
+    connect(process, &QProcess::started, this, [this]() {
+        m_mainThreadId = m_procInfo
+            ? static_cast<PROCESS_INFORMATION*>(m_procInfo)->dwThreadId : 0;
+        m_procInfo = nullptr;  // QProcess owns and frees it; never hold it
+        if (m_mainThreadId == 0) {
+            qWarning() << "ViewModuleHost: no main thread id for" << m_moduleName
+                       << "- shutdown will fall back to kill()";
+        }
+    });
+#endif
+
     connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this, process](int exitCode, QProcess::ExitStatus) {
         qDebug() << "ViewModuleHost: process exited for" << m_moduleName << "with code" << exitCode;
@@ -146,6 +171,38 @@ void ViewModuleHost::stop()
 
     // Leave m_process pointing at the QProcess until the finished() handler
     // clears it, so any in-flight readyRead lambdas still see a valid pointer.
+#ifdef Q_OS_WIN
+    // REPLACES terminate() on Windows rather than preceding it, because
+    // terminate() here is measurably dead time. QProcess::terminate() is
+    // EnumWindows(WM_CLOSE) + PostThreadMessage(tid, WM_CLOSE); ui-host is a
+    // windowless QCoreApplication (no Qt6::Gui at all), so the enumeration finds
+    // nothing -- measured: 0 top-level and 0 thread windows, while the same
+    // enumeration in the same run found 7 for Basecamp. The thread message IS
+    // delivered, but Qt's dispatcher only branches on WM_QUIT, so WM_CLOSE falls
+    // through to a no-op. terminate() returns void, so it "succeeds" doing
+    // nothing and the child is then hard-killed after the full grace period:
+    // measured exit code 62097 (0xF291, Qt's KillProcessExitCode).
+    //
+    // Same disease and same cure as the module host in
+    // logos-container-subprocess, which also replaces (not supplements) its
+    // no-op request_exit() with PostThreadMessage(WM_QUIT).
+    // Measured against the shipped ui-host.exe: terminate() left it alive for
+    // the full 3000 ms; WM_QUIT exited it in 8 ms with code 0.
+    bool posted = false;
+    if (m_mainThreadId != 0 && process->state() == QProcess::Running)
+        posted = ::PostThreadMessageW(m_mainThreadId, WM_QUIT, 0, 0);
+    if (posted) {
+        if (process->waitForFinished(3000))
+            return;
+        qWarning() << "ViewModuleHost: WM_QUIT not honoured by" << m_moduleName;
+    } else {
+        qWarning() << "ViewModuleHost: no main thread id for" << m_moduleName;
+    }
+    // Fall through to kill(): terminate() would only add dead time here.
+    qWarning() << "ViewModuleHost: process did not exit gracefully, killing" << m_moduleName;
+    process->kill();
+    process->waitForFinished(1000);
+#else
     process->terminate();
 
     if (!process->waitForFinished(3000)) {
@@ -153,6 +210,7 @@ void ViewModuleHost::stop()
         process->kill();
         process->waitForFinished(1000);
     }
+#endif
 }
 
 bool ViewModuleHost::isRunning() const
