@@ -6,12 +6,19 @@ pkgs.stdenv.mkDerivation {
 
   src = ../.;
 
+  # Required wherever the Qt wrapper hooks are absent (see below).
+  dontWrapQtApps = true;
+
   nativeBuildInputs = [
     pkgs.cmake
     pkgs.ninja
     pkgs.pkg-config
-    pkgs.qt6.wrapQtAppsHook
-  ];
+  ]
+  # wrapQtAppsHook fails to EVALUATE for a mingw host, and wrap-qt-apps-hook.sh
+  # would skip a PE anyway (`isELF || isMachO || continue`). Gating it off is
+  # only half the fix -- qtbase's setup hook hard-errors unless
+  # dontWrapQtApps is also set below.
+  ++ pkgs.lib.optional (!pkgs.stdenv.hostPlatform.isWindows) pkgs.qt6.wrapQtAppsHook;
 
   buildInputs = [
     pkgs.qt6.qtbase
@@ -35,6 +42,11 @@ pkgs.stdenv.mkDerivation {
     cmakeFlagsArray+=("-DLOGOS_CPP_SDK_ROOT=${logosSdk}")
     cmakeFlagsArray+=("-DLOGOS_QT_SDK_ROOT=${logosQtSdk}")
     cmakeFlagsArray+=("-DLOGOS_PROTOCOL_ROOT=${logosProtocol}")
+    # Qt splits its host TOOLS into separate packages that must run on the
+    # BUILD machine; -DQT_HOST_PATH=<qtbase> cannot reach them. Empty natively.
+    ${pkgs.lib.concatMapStringsSep "\n    "
+        (f: "cmakeFlagsArray+=(\"" + f + "\")")
+        (pkgs.logosQtCrossCmakeFlags or [ ])}
   '';
 
   cmakeFlags = [
@@ -43,7 +55,7 @@ pkgs.stdenv.mkDerivation {
 
   meta = with pkgs.lib; {
     description = "Shared runtime library for loading Logos UI modules (LogosQmlBridge, ViewModuleHost, ui-host)";
-    platforms = platforms.unix;
+    platforms = platforms.unix ++ platforms.windows;
     license = licenses.mit;
   };
 }

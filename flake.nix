@@ -24,10 +24,11 @@
 
   outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-protocol, logos-qt-sdk }:
     let
-      systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
-      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f {
-        inherit system;
-        pkgs = import nixpkgs { inherit system; };
+      # Adds the "x86_64-windows" pseudo-system. A cross derivation's `system`
+      # attr is its BUILD platform, so these evaluate anywhere and realise on
+      # x86_64-linux.
+      forAllSystems = f: logos-nix.lib.forAllTargets ({ system, pkgs }: f {
+        inherit system pkgs;
         logosSdk = logos-cpp-sdk.packages.${system}.default;
         logosQtSdk = logos-qt-sdk.packages.${system}.default;
         logosProtocol = logos-protocol.packages.${system}.default;
