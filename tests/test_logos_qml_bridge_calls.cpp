@@ -202,8 +202,20 @@ private slots:
         api.getTokenManager()->saveToken(mod, QStringLiteral("tok"));
         LogosQmlBridge bridge(&api);
 
+        // The timer must be SCOPED, not QTimer::singleShot. This test only
+        // reaches its assertion if the call waits long enough for the timer to
+        // fire inside it — so when the wait is short (which is precisely the
+        // regression being tested) the function returns first, and a detached
+        // singleShot would then fire on dangling references to these locals.
+        // That is not hypothetical: it segfaulted the run that proved this test
+        // red. Declaring `pub` before the timer means the timer is destroyed
+        // first, cancelling any pending fire while its captures are still alive.
         std::unique_ptr<Publisher> pub;
-        QTimer::singleShot(150, [&pub, &mod]() { pub = std::make_unique<Publisher>(mod); });
+        QTimer publishTimer;
+        publishTimer.setSingleShot(true);
+        QObject::connect(&publishTimer, &QTimer::timeout, &publishTimer,
+                         [&pub, mod]() { pub = std::make_unique<Publisher>(mod); });
+        publishTimer.start(150);
 
         const QString payload = bridge.callModule(mod, QStringLiteral("echo"),
                                                   QVariantList() << 7);
