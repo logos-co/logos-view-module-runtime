@@ -48,13 +48,28 @@ public:
     explicit LogosQmlBridge(LogosAPI* api, QObject* parent = nullptr);
 
     // ── Backend (non-view) module calls via LogosAPI IPC ────────────────
+    //
+    // Synchronous: it must answer now, so it cannot wait for a module the way
+    // callModuleAsync() does. If the module is still starting it waits a short
+    // bounded time and then returns an error naming callModuleAsync — it does
+    // NOT sit in the transport's full acquire budget on the GUI thread, which
+    // is what a call issued from Component.onCompleted used to do.
+    //
+    // PREFER callModuleAsync() for anything a view's first paint depends on.
+    // A startup call is exactly the case this form handles worst.
     Q_INVOKABLE QString callModule(const QString& module,
                                    const QString& method,
                                    const QVariantList& args = QVariantList());
 
+    // Asynchronous, and the right tool during startup: a module that is not
+    // reachable yet is NOT an error here. The call is held and dispatched as
+    // soon as the module appears — including one installed mid-session by the
+    // package manager — and nothing blocks the GUI thread while it waits.
+    //
     // timeoutMs: if > 0, the callback is invoked with an error payload when
     // no reply arrives within that many milliseconds. Default 30000 (30s);
-    // pass 0 to disable.
+    // pass 0 to disable. That deadline now bounds the WAIT for the module as
+    // well as the call itself, so a module that never appears still answers.
     Q_INVOKABLE void callModuleAsync(const QString& module,
                                      const QString& method,
                                      const QVariantList& args,

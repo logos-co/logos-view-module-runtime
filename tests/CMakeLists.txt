@@ -140,3 +140,27 @@ target_link_libraries(test_logos_qml_bridge_deferred PRIVATE
 )
 
 add_test(NAME LogosQmlBridgeDeferredTests COMMAND test_logos_qml_bridge_deferred)
+
+# The CALL path against a module that is not reachable yet — the sibling of the
+# deferred-subscription suite above. callModule/callModuleAsync carried the
+# identical `if (!client->isConnected())` guard, which was dead code for years
+# and so had no coverage in either direction. Pins the two forms' DIFFERENT
+# contracts: the synchronous one waits a bounded time and then names
+# callModuleAsync in its error; the asynchronous one holds the call until the
+# module appears, bounded by the caller's own deadline.
+add_executable(test_logos_qml_bridge_calls
+    test_logos_qml_bridge_calls.cpp
+)
+
+target_link_libraries(test_logos_qml_bridge_calls PRIVATE
+    logos_view_module_runtime
+    Qt6::Core
+    Qt6::Test
+    Qt6::Qml
+    Qt6::RemoteObjects
+    logos-qt-sdk::logos_qt_sdk
+    logos-cpp-sdk::logos_headers
+    logos-protocol::logos_protocol
+)
+
+add_test(NAME LogosQmlBridgeCallsTests COMMAND test_logos_qml_bridge_calls)

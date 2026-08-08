@@ -25,6 +25,19 @@
 #include "logos_json_convert.h"  // logos::qvariantToNlohmann (canonical result serialization)
 
 namespace {
+
+// How long the SYNCHRONOUS callModule() will wait for a module that is still
+// coming up, before answering with an error.
+//
+// Not a tuning knob so much as a bound on a hazard. The default acquire budget
+// is 20 s and it is paid twice (the token handshake tries capability_module
+// first) on the GUI thread; ~417 s was measured in Basecamp with a dependency
+// absent. A module that is genuinely starting arms in roughly 50-150 ms, since
+// QtRO retries its endpoint every 250 ms — so this covers the real race several
+// times over while capping the pathological case at something a first paint can
+// absorb. callModuleAsync() does not use it: it can wait properly.
+constexpr int kStartupCallBudgetMs = 1500;
+
 QString makeErrorPayload(const QString& error,
                          const QString& module = QString(),
                          const QString& method = QString(),
@@ -61,19 +74,50 @@ QString LogosQmlBridge::callModule(const QString& module,
         return QStringLiteral("{\"error\":\"LogosAPI not available\"}");
 
     LogosAPIClient* client = m_logosAPI->getClient(module);
-    if (!client || !client->isConnected())
+    if (!client)
         return makeErrorPayload(QStringLiteral("Module not connected"), module);
 
+    // No isConnected() guard. It asked "is the module there RIGHT NOW", and QML
+    // asks from Component.onCompleted -- the one moment the answer is no --
+    // which turned a startup call into a permanent error payload for a view
+    // that will never retry. Deleting it alone is not the fix either: the
+    // default acquire budget is 20 s, paid TWICE because the token handshake
+    // tries capability_module first, and this runs on the GUI thread.
+    //
+    // So the wait is bounded instead of refused. A module that is coming up
+    // arms in roughly 50-150 ms (QtRO retries its endpoint every 250 ms), so
+    // this covers the real startup race several times over while capping the
+    // worst case at something a first paint can absorb -- against ~417 s
+    // measured on macOS with the old default.
+    //
+    // A synchronous call cannot do better than this: it must return a value
+    // now, so it cannot wait for the module the way callModuleAsync() does.
+    // That is why the error below names callModuleAsync rather than just
+    // reporting failure -- for a view whose first paint depends on the answer,
+    // the async form is the correct tool, not a longer timeout here.
     logos::CallError err;
     QVariant result = client->invokeRemoteMethod(module, method, args,
-                                                 Timeout(), &err);
-    if (!err.ok()) {
-        return makeErrorPayload(QStringLiteral("Module source unavailable"),
-                                module, method,
-                                QString::fromStdString(err.message));
-    }
-    if (!result.isValid())
+                                                 Timeout(kStartupCallBudgetMs), &err);
+    if (!err.ok() || !result.isValid()) {
+        // "Still starting" and "answered badly" are different problems with
+        // different fixes, and the module being absent surfaces as EITHER an
+        // acquire CallError or an invalid result depending on transport and
+        // timing. So the reachability question is asked once, ahead of both,
+        // rather than being inferred from which failure shape came back — that
+        // inference is what made a startup race look like a broken module.
+        if (!client->isConnected())
+            return makeErrorPayload(
+                QStringLiteral("Module not reachable yet"), module, method,
+                QStringLiteral("still not reachable after %1 ms; if this call happens at "
+                               "startup use logos.callModuleAsync(), which waits for the "
+                               "module instead of giving up")
+                    .arg(kStartupCallBudgetMs));
+        if (!err.ok())
+            return makeErrorPayload(QStringLiteral("Module source unavailable"),
+                                    module, method,
+                                    QString::fromStdString(err.message));
         return makeErrorPayload(QStringLiteral("Invalid response"), module, method);
+    }
 
     return LogosQmlBridge::serializeResultForTesting(result);
 }
@@ -106,7 +150,7 @@ void LogosQmlBridge::callModuleAsync(const QString& module,
     }
 
     LogosAPIClient* client = m_logosAPI->getClient(module);
-    if (!client || !client->isConnected()) {
+    if (!client) {
         invokeCallback(makeErrorPayload(QStringLiteral("Module not connected"), module));
         return;
     }
@@ -117,7 +161,11 @@ void LogosQmlBridge::callModuleAsync(const QString& module,
         });
     }
 
-    client->invokeRemoteMethodAsync(
+    // The dispatch, once the module is known to be reachable.
+    QPointer<LogosQmlBridge> self(this);
+    auto dispatch = [self, client, module, method, args, invokeCallback]() mutable {
+        if (!self) return;
+        client->invokeRemoteMethodAsync(
         module, method, args,
         LogosAPIClient::AsyncResultErrorCallback(
             [invokeCallback, module, method](QVariant result, const logos::CallError& err) mutable {
@@ -135,6 +183,29 @@ void LogosQmlBridge::callModuleAsync(const QString& module,
                 }
                 invokeCallback(LogosQmlBridge::serializeResultForTesting(result));
             }));
+    };
+
+    // Unlike the synchronous twin, this one can WAIT — it owes the caller a
+    // callback, not a return value. So a module that is merely still starting
+    // is no longer an error: the call is held until the module is reachable and
+    // dispatched then. Nothing blocks; the deadline the caller already passes
+    // (timeoutMs) is what bounds it, and the timer above fires the timeout
+    // payload if the module never shows up.
+    //
+    // whenObjectAvailable() answers immediately when the module is already
+    // there, so the ready path costs at most one event-loop turn.
+    client->whenObjectAvailable(module, [self, dispatch, invokeCallback, module](bool ready) mutable {
+        if (!self) return;
+        if (!ready) {
+            // The transport proved it impossible — say so rather than letting
+            // the caller sit until timeoutMs with no explanation.
+            invokeCallback(makeErrorPayload(
+                QStringLiteral("Module not reachable"), module, QString(),
+                QStringLiteral("the transport reported this module permanently unavailable")));
+            return;
+        }
+        dispatch();
+    });
 }
 
 void LogosQmlBridge::watch(const QVariant& pendingCall,
