@@ -248,27 +248,36 @@ private slots:
         const QString mod = QStringLiteral("echo_stale_module");
         LogosModeConfig::setMode(LogosMode::Remote);
 
-        Publisher pub(mod);
-
         LogosAPI api(QStringLiteral("caller"));
         api.getTokenManager()->saveToken(mod, QStringLiteral("tok"));
         LogosQmlBridge bridge(&api);
 
+        // Subscribe while the module is absent, so the subscription is PENDING
+        // and nothing is attached to a handle yet. That matters: cancelling an
+        // ARMED subscription deliberately leaves its callback on the shared
+        // handle, so events would keep arriving and the test would pass for the
+        // wrong reason.
         QVERIFY(bridge.onModuleEvent(mod, QStringLiteral("ev0")));
-        QSignalSpy warmup(&bridge, &LogosQmlBridge::moduleEventReceived);
-        QVERIFY2(fireUntilDelivered(pub.echo, QStringLiteral("ev0"), warmup, 10000),
-                 "control: the first subscription never delivered -- fixture broken");
 
-        // Make the bridge's record stale behind its back.
         LogosAPIClient* client = api.getClient(mod);
         QVERIFY(client != nullptr);
-        const QStringList before = client->pendingEventSubscriptions();
-        Q_UNUSED(before);
-        for (quint64 id = 1; id <= 8; ++id) client->cancelEventSubscription(id);
+        QVERIFY2(!client->pendingEventSubscriptions().isEmpty(),
+                 "control: the subscription has to BE pending for this to test anything");
+
+        // Drop it behind the bridge's back, leaving the bridge's own record
+        // claiming it is still subscribed. Ids are per-consumer and start at 1,
+        // and this client is fresh, so this is the subscription just made --
+        // asserted rather than assumed.
+        QVERIFY2(client->cancelEventSubscription(1),
+                 "control: id 1 was not the subscription just made -- fixture assumption broken");
+        QVERIFY(client->pendingEventSubscriptions().isEmpty());
+
+        Publisher pub(mod);
 
         // Re-subscribing must ARM again rather than being swallowed as a
-        // duplicate. Proven by delivery, not by the return value: `true` is
-        // exactly what the broken version returns.
+        // duplicate. Proven by DELIVERY, not by the return value: `true` is
+        // exactly what the trusting-the-record version also returns, which is
+        // what made the failure silent.
         QVERIFY(bridge.onModuleEvent(mod, QStringLiteral("ev0")));
         QSignalSpy spy(&bridge, &LogosQmlBridge::moduleEventReceived);
         QVERIFY2(fireUntilDelivered(pub.echo, QStringLiteral("ev0"), spy, 10000),
