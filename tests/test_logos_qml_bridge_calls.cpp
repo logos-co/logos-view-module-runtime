@@ -44,7 +44,9 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QString>
+#include <QAtomicInt>
 #include <QTest>
+#include <QThread>
 #include <QTimer>
 #include <QVariantList>
 
@@ -55,7 +57,14 @@ namespace {
 class EchoProvider : public LogosProviderObject {
 public:
     EventCallback emitFn;
+    // Observed by the never-dispatched test: asserting on the callback alone
+    // cannot tell "suppressed" from "never sent", and only the second is
+    // at-most-once.
+    QAtomicInt callCount{0};
+    int sleepMs = 0;                   // simulate a legitimately slow method
     QVariant callMethod(const QString& method, const QVariantList& args) override {
+        callCount.fetchAndAddRelaxed(1);
+        if (sleepMs > 0) QThread::msleep(static_cast<unsigned long>(sleepMs));
         if (method == QLatin1String("echo") && !args.isEmpty()) return args.first();
         return QVariant();
     }
@@ -306,6 +315,96 @@ private slots:
         QVERIFY2(elapsed < 8000,
                  qPrintable(QStringLiteral("timeout payload took %1 ms for a 1000 ms deadline")
                                 .arg(elapsed)));
+    }
+
+    // ── A TIMED-OUT CALL MUST NEVER BE SENT ────────────────────────────────
+    // Holding a call is only at-most-once if the hold is ABANDONED when the
+    // caller stops waiting. Otherwise an install / send / transfer executes
+    // minutes after the view was told it failed — the callback was suppressed,
+    // but the method still ran. Asserting on the callback alone cannot see
+    // that, so this asserts on the PROVIDER: it must never observe the call.
+    void asyncCall_timedOutThenModuleAppears_isNeverDispatched()
+    {
+        const QString mod = QStringLiteral("acall_notsent_module");
+        LogosModeConfig::setMode(LogosMode::Remote);
+
+        LogosAPI api(QStringLiteral("caller"));
+        api.getTokenManager()->saveToken(mod, QStringLiteral("tok"));
+        LogosQmlBridge bridge(&api);
+
+        AsyncRun run;
+        run.arm(&bridge);
+        run.call(mod, 400);                       // short deadline, module absent
+
+        QVERIFY2(run.waitFired(10000), "control: the deadline never fired");
+        QCOMPARE(asObject(run.payload()).value(QStringLiteral("error")).toString(),
+                 QStringLiteral("timeout"));
+
+        // NOW the module turns up. The held call must be dropped, not sent.
+        Publisher pub(mod);
+        pump(3000);
+        QCOMPARE(pub.echo.callCount.loadRelaxed(), 0);
+    }
+
+    // "pass 0 to disable" must not become "never calls back", and must not
+    // become "blocks the GUI thread for the full default budget" either — the
+    // dispatch-immediately shortcut reaches the synchronous acquire inside
+    // invokeRemoteMethodAsync and stalls for 20 s, which is the exact
+    // pathology this area exists to remove.
+    void asyncCall_timeoutDisabled_doesNotBlockAndStillAnswers()
+    {
+        const QString mod = QStringLiteral("acall_zerotimeout_module");
+        LogosModeConfig::setMode(LogosMode::Remote);
+
+        LogosAPI api(QStringLiteral("caller"));
+        api.getTokenManager()->saveToken(mod, QStringLiteral("tok"));
+        LogosQmlBridge bridge(&api);
+
+        AsyncRun run;
+        run.arm(&bridge);
+        QElapsedTimer t; t.start();
+        run.call(mod, 0);                          // documented "disable"
+        const qint64 elapsed = t.elapsed();
+
+        QVERIFY2(elapsed < 250,
+                 qPrintable(QStringLiteral("callModuleAsync(timeoutMs=0) blocked the calling "
+                                           "thread for %1 ms").arg(elapsed)));
+
+        // The module NEVER appears — deliberately. Publishing one here would
+        // make this pass against the broken version too, because the stranding
+        // only happens when nothing ever arrives to arm the deferred call. With
+        // no deadline of its own and no fallback bounding the wait, the caller
+        // is never answered at all.
+        QVERIFY2(run.waitFired(40000),
+                 "timeoutMs=0 was never answered: with no deadline on the call, the wait "
+                 "for the module has to carry one, or 'no timeout' silently becomes "
+                 "'no callback'");
+        QCOMPARE(asObject(run.payload()).value(QStringLiteral("error")).toString(),
+                 QStringLiteral("timeout"));
+    }
+
+    // The short startup budget must not cap a module that IS reachable, or
+    // every legitimately slow method — a network fetch, a package install, a
+    // chain RPC — starts failing, and old QML shipped inside a .lgx cannot opt
+    // out because callModule takes no timeout argument.
+    void syncCall_reachableButSlowModule_isNotCappedByTheStartupBudget()
+    {
+        const QString mod = QStringLiteral("call_slow_module");
+        LogosModeConfig::setMode(LogosMode::Remote);
+
+        Publisher pub(mod);
+        pub.echo.sleepMs = 2500;                  // > kStartupCallBudgetMs (1500)
+
+        LogosAPI api(QStringLiteral("caller"));
+        api.getTokenManager()->saveToken(mod, QStringLiteral("tok"));
+        LogosQmlBridge bridge(&api);
+
+        const QString payload = bridge.callModule(mod, QStringLiteral("echo"),
+                                                  QVariantList() << 7);
+        QVERIFY2(!asObject(payload).contains(QStringLiteral("error")),
+                 qPrintable(QStringLiteral("a reachable module taking 2500 ms was cut off by "
+                                           "the startup budget: %1").arg(payload)));
+        QCOMPARE(payload.trimmed(), QStringLiteral("7"));
     }
 
     // The whole point of the async form is that it does not block. Issuing one

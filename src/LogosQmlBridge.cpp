@@ -38,6 +38,11 @@ namespace {
 // absorb. callModuleAsync() does not use it: it can wait properly.
 constexpr int kStartupCallBudgetMs = 1500;
 
+// How long callModuleAsync waits for a module when the caller passed no
+// deadline of its own. Bounds only the WAIT, never the method — it exists so
+// that "no timeout" cannot become "no callback".
+constexpr int kReadinessFallbackMs = 30000;
+
 QString makeErrorPayload(const QString& error,
                          const QString& module = QString(),
                          const QString& method = QString(),
@@ -95,9 +100,19 @@ QString LogosQmlBridge::callModule(const QString& module,
     // That is why the error below names callModuleAsync rather than just
     // reporting failure -- for a view whose first paint depends on the answer,
     // the async form is the correct tool, not a longer timeout here.
+    // One Timeout caps BOTH the acquire and the method's execution
+    // (logos_api_consumer.cpp passes timeout.ms to acquireCachedObject and then
+    // to callMethod), so a blanket startup budget here would also cap every
+    // legitimately slow method — a network fetch, a package install, a chain
+    // RPC — and old QML shipped inside a .lgx cannot opt out, because
+    // callModule takes no timeout argument. So the short budget applies only
+    // when the module is NOT reachable, which is the case it exists for;
+    // a reachable module keeps the full default budget it always had.
+    const int budgetMs = client->isConnected() ? Timeout().ms : kStartupCallBudgetMs;
+
     logos::CallError err;
     QVariant result = client->invokeRemoteMethod(module, method, args,
-                                                 Timeout(kStartupCallBudgetMs), &err);
+                                                 Timeout(budgetMs), &err);
     if (!err.ok() || !result.isValid()) {
         // "Still starting" and "answered badly" are different problems with
         // different fixes, and the module being absent surfaces as EITHER an
@@ -194,8 +209,32 @@ void LogosQmlBridge::callModuleAsync(const QString& module,
     //
     // whenObjectAvailable() answers immediately when the module is already
     // there, so the ready path costs at most one event-loop turn.
-    client->whenObjectAvailable(module, [self, dispatch, invokeCallback, module](bool ready) mutable {
+    // `timeoutMs <= 0` means "no deadline on the CALL" ("pass 0 to disable").
+    // It cannot also mean "no deadline on waiting for the module": with no
+    // timer, a module that never appears would never call back, and the
+    // documented contract is that the callback fires. Nor can it mean
+    // "dispatch immediately" — that reaches the synchronous acquire inside
+    // invokeRemoteMethodAsync and blocks this thread for the full default
+    // budget, which is the GUI-thread stall this whole area exists to remove,
+    // smuggled back in through the one path that opted out of deadlines.
+    //
+    // So the wait itself gets a deadline even when the call does not. It is
+    // used ONLY to guarantee a callback, never to cap the method.
+    const int readinessBudgetMs = timeoutMs > 0 ? timeoutMs : kReadinessFallbackMs;
+    if (timeoutMs <= 0) {
+        QTimer::singleShot(readinessBudgetMs, this, [invokeCallback, module, method]() mutable {
+            invokeCallback(makeErrorPayload(QStringLiteral("timeout"), module, method));
+        });
+    }
+
+    client->whenObjectAvailable(module, [self, dispatch, invokeCallback, module, fired](bool ready) mutable {
         if (!self) return;
+        // The deadline may already have answered the caller. Dispatching now
+        // would send a method the view has been told failed — and a call is not
+        // idempotent, so an install/send/transfer could execute minutes after
+        // the UI reported a timeout. Holding a call is only at-most-once if the
+        // hold is abandoned when the caller stops waiting.
+        if (*fired) return;
         if (!ready) {
             // The transport proved it impossible — say so rather than letting
             // the caller sit until timeoutMs with no explanation.
