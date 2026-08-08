@@ -40,14 +40,21 @@ static int runChain(const QString& kind, int N, int nSubs)
 
     LogosQmlBridge bridge(&api);
 
-    if (!bridge.onModuleEvent(QStringLiteral("echo_module"), QStringLiteral("ev0"))) {
-        // First subscription also proves the cross-process connection is up.
-        err << "  [" << kind << "] WARNING: first onModuleEvent returned false\n";
-    }
-    for (int i = 1; i < nSubs; ++i)
+    for (int i = 0; i < nSubs; ++i)
         bridge.onModuleEvent(QStringLiteral("echo_module"), QStringLiteral("ev%1").arg(i));
     for (int k = 0; k < 80; ++k)
         QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+
+    // onModuleEvent's return value no longer says anything about the
+    // cross-process connection: a subscription made before the peer is
+    // listening is now ACCEPTED and armed later, which is the whole point. The
+    // connection probe is the pending list draining instead.
+    const QStringList stillPending = bridge.pendingEventSubscriptions();
+    if (!stillPending.isEmpty()) {
+        err << "  [" << kind << "] WARNING: " << stillPending.size()
+            << " event subscription(s) still unarmed after the settle window: "
+            << stillPending.join(QStringLiteral(", ")) << "\n";
+    }
 
     QJSEngine engine;
     engine.setObjectOwnership(&bridge, QJSEngine::CppOwnership);

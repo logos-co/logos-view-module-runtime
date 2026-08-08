@@ -119,3 +119,24 @@ target_link_libraries(test_2proc_bridge_driver PRIVATE
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )
+
+# Deferred event-subscription regression: a QML plugin subscribing in
+# Component.onCompleted BEFORE the target core module is reachable. The
+# subscription must survive and arm when the module appears (including a
+# mid-session install), must not double-deliver, and must never block.
+add_executable(test_logos_qml_bridge_deferred
+    test_logos_qml_bridge_deferred.cpp
+)
+
+target_link_libraries(test_logos_qml_bridge_deferred PRIVATE
+    logos_view_module_runtime
+    Qt6::Core
+    Qt6::Test
+    Qt6::Qml
+    Qt6::RemoteObjects
+    logos-qt-sdk::logos_qt_sdk
+    logos-cpp-sdk::logos_headers
+    logos-protocol::logos_protocol
+)
+
+add_test(NAME LogosQmlBridgeDeferredTests COMMAND test_logos_qml_bridge_deferred)

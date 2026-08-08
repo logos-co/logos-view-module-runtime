@@ -6,6 +6,9 @@
 #include <QVariantList>
 #include <QJSValue>
 #include <QMap>
+#include <QSet>
+#include <QStringList>
+#include <QPair>
 
 class LogosAPI;
 class QRemoteObjectNode;
@@ -128,8 +131,27 @@ public:
     //       }
     //   }
     //
-    // Returns true if the subscription succeeded.
+    // Component.onCompleted is the RIGHT place to call this even though the
+    // module is usually not reachable yet at that point: the subscription is
+    // accepted and armed as soon as the module appears — including a module
+    // installed mid-session by the package manager. Nothing is dropped and
+    // nothing blocks the GUI thread.
+    //
+    // Calling it twice for the same (module, event) is a no-op, so a view that
+    // re-runs Component.onCompleted on reload will not receive doubled events.
+    //
+    // Returns true if the subscription was ACCEPTED — which is not the same as
+    // "is live right now". It returns false only for errors no retry can fix:
+    // no LogosAPI, an empty module or event name, or a VIEW module (those emit
+    // through their typed replica; use logos.module(name) and a Connections
+    // block instead).
     Q_INVOKABLE bool onModuleEvent(const QString& moduleName, const QString& eventName);
+
+    // Diagnostics: "<module>::<event>" for every subscription made via
+    // onModuleEvent() that has been accepted but has not armed yet. Empty once
+    // every subscription is live. Exposed to QML so a view (or a test) can tell
+    // "waiting for the module" apart from "subscribed, module is just quiet".
+    Q_INVOKABLE QStringList pendingEventSubscriptions() const;
 
 signals:
     void viewModuleReadyChanged(const QString& moduleName, bool ready);
@@ -153,4 +175,10 @@ private:
     QMap<QString, LogosViewReplicaFactory*> m_factories;
     QMap<QString, QObject*> m_replicas;
     QMap<QString, QAbstractItemModelReplica*> m_modelReplicas;
+
+    // (module, event) pairs already handed to the transport. QML re-runs
+    // Component.onCompleted on a view reload, and the layer below deliberately
+    // does not de-duplicate (two lp_subscribe calls to the same event are two
+    // real subscriptions), so the de-dupe belongs here.
+    QSet<QPair<QString, QString>> m_eventSubscriptions;
 };

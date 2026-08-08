@@ -306,33 +306,86 @@ void LogosQmlBridge::notifyViewModuleCrashed(const QString& moduleName)
 
 bool LogosQmlBridge::onModuleEvent(const QString& moduleName, const QString& eventName)
 {
+    // This runs from Component.onCompleted, i.e. while the QML view is being
+    // built — which in Basecamp is immediately after PluginLoader has *spawned*
+    // the core dependency's host process, and well before that process has
+    // called listen(). It therefore must not ask "is the module connected?"
+    // and must not block waiting for a replica.
+    //
+    // It used to do both: `if (!client->isConnected()) return false;` followed
+    // by a blocking requestObject(). Once logos-protocol 1238316 made
+    // isConnected() truthful, that guard started refusing every subscription
+    // made at view-construction time, one shot, with nothing recorded and no
+    // retry — so QML events never arrived while method calls kept working
+    // (calls reach the replica by a path that never asks). Reverting 1238316 is
+    // not the answer; it removed ~417 s (macOS) / 361 s (Linux) of blocked GUI
+    // thread at startup. The subscription becomes deferrable instead.
     if (!m_logosAPI) {
         qWarning() << "LogosQmlBridge::onModuleEvent: LogosAPI not available";
         return false;
     }
+    if (moduleName.isEmpty() || eventName.isEmpty()) {
+        qWarning() << "LogosQmlBridge::onModuleEvent: empty module or event name"
+                   << moduleName << eventName;
+        return false;
+    }
+    if (m_viewModuleSockets.contains(moduleName)) {
+        // A view module's signals come off its typed replica, not the IPC event
+        // channel; subscribing here would wait forever for something that never
+        // publishes on that name.
+        qWarning() << "LogosQmlBridge::onModuleEvent:" << moduleName
+                   << "is a VIEW module -- use logos.module(\"" << moduleName
+                   << "\") and a Connections block for its signals";
+        return false;
+    }
+
+    const QPair<QString, QString> key(moduleName, eventName);
+    if (m_eventSubscriptions.contains(key))
+        return true;                    // idempotent: QML may re-run onCompleted
 
     LogosAPIClient* client = m_logosAPI->getClient(moduleName);
-    if (!client || !client->isConnected()) {
-        qWarning() << "LogosQmlBridge::onModuleEvent:" << moduleName << "not connected";
+    if (!client) {
+        qWarning() << "LogosQmlBridge::onModuleEvent: no client for" << moduleName;
         return false;
     }
-
-    LogosObject* obj = client->requestObject(moduleName);
-    if (!obj) {
-        qWarning() << "LogosQmlBridge::onModuleEvent: could not get object for" << moduleName;
-        return false;
-    }
+    m_eventSubscriptions.insert(key);
 
     QPointer<LogosQmlBridge> self(this);
-    QString mod = moduleName;
-    client->onEvent(obj, eventName, [self, mod](const QString& event, const QVariantList& data) {
-        if (self) {
-            emit self->moduleEventReceived(mod, event, data);
-        }
-    });
+    const QString mod = moduleName;
+    // Non-blocking by construction: no isConnected() probe, no requestObject(),
+    // no nested event loop on this path. The subscription is armed by the
+    // transport when the module becomes reachable, and the layer below owns the
+    // diagnostics (warn once on deferral, log on arm, warn loudly if it ever
+    // becomes impossible).
+    client->onEventWhenAvailable(
+        moduleName, eventName,
+        [self, mod](const QString& event, const QVariantList& data) {
+            if (self)
+                emit self->moduleEventReceived(mod, event, data);
+        },
+        [self, key](bool armed) {
+            // Abandoned subscriptions must not linger in the de-dupe set, or a
+            // later retry from QML would be swallowed as a duplicate.
+            if (self && !armed)
+                self->m_eventSubscriptions.remove(key);
+        });
 
-    qDebug() << "LogosQmlBridge: subscribed to" << moduleName << "::" << eventName;
+    qDebug() << "LogosQmlBridge: subscription accepted for" << moduleName << "::" << eventName;
     return true;
+}
+
+QStringList LogosQmlBridge::pendingEventSubscriptions() const
+{
+    if (!m_logosAPI) return QStringList();
+    QStringList out;
+    QSet<QString> seen;
+    for (const auto& key : m_eventSubscriptions) {
+        if (seen.contains(key.first)) continue;
+        seen.insert(key.first);
+        if (LogosAPIClient* client = m_logosAPI->getClient(key.first))
+            out += client->pendingEventSubscriptions();
+    }
+    return out;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
