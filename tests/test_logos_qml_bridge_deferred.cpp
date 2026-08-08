@@ -26,6 +26,7 @@
 #include "LogosQmlBridge.h"
 
 #include "logos_api.h"                 // LogosAPI, getTokenManager
+#include "logos_api_client.h"          // LogosAPIClient::cancelEventSubscription
 #include "token_manager.h"             // TokenManager::saveToken
 #include "logos_provider_interface.h"  // LogosProviderObject
 #include "module_proxy.h"              // ModuleProxy
@@ -230,6 +231,49 @@ private slots:
         pump(1000);
 
         QCOMPARE(spy.count(), 1);
+    }
+
+    // ── THE DE-DUPE MUST BE VERIFIED, NOT ASSUMED ──────────────────────────
+    // The idempotency above is what makes the failure below possible: if the
+    // bridge short-circuits on its own record without checking whether the
+    // subscription is still live, a view that re-subscribes after the
+    // subscription was dropped underneath it gets `true` and nothing else --
+    // a permanently silent success, which is the exact shape of the original
+    // bug wearing the fix's clothes.
+    //
+    // Cancelling through the client is the reachable way to make the record
+    // stale; the same happens whenever the layer below stops tracking it.
+    void staleSubscriptionRecord_reSubscribeReArms()
+    {
+        const QString mod = QStringLiteral("echo_stale_module");
+        LogosModeConfig::setMode(LogosMode::Remote);
+
+        Publisher pub(mod);
+
+        LogosAPI api(QStringLiteral("caller"));
+        api.getTokenManager()->saveToken(mod, QStringLiteral("tok"));
+        LogosQmlBridge bridge(&api);
+
+        QVERIFY(bridge.onModuleEvent(mod, QStringLiteral("ev0")));
+        QSignalSpy warmup(&bridge, &LogosQmlBridge::moduleEventReceived);
+        QVERIFY2(fireUntilDelivered(pub.echo, QStringLiteral("ev0"), warmup, 10000),
+                 "control: the first subscription never delivered -- fixture broken");
+
+        // Make the bridge's record stale behind its back.
+        LogosAPIClient* client = api.getClient(mod);
+        QVERIFY(client != nullptr);
+        const QStringList before = client->pendingEventSubscriptions();
+        Q_UNUSED(before);
+        for (quint64 id = 1; id <= 8; ++id) client->cancelEventSubscription(id);
+
+        // Re-subscribing must ARM again rather than being swallowed as a
+        // duplicate. Proven by delivery, not by the return value: `true` is
+        // exactly what the broken version returns.
+        QVERIFY(bridge.onModuleEvent(mod, QStringLiteral("ev0")));
+        QSignalSpy spy(&bridge, &LogosQmlBridge::moduleEventReceived);
+        QVERIFY2(fireUntilDelivered(pub.echo, QStringLiteral("ev0"), spy, 10000),
+                 "re-subscribing after the record went stale was swallowed as a "
+                 "duplicate: onModuleEvent returned true and armed nothing");
     }
 
     // ── NON-BLOCKING GUARD ─────────────────────────────────────────────────

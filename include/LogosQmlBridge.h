@@ -5,6 +5,7 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QJSValue>
+#include <QHash>
 #include <QMap>
 #include <QSet>
 #include <QStringList>
@@ -134,11 +135,23 @@ public:
     // Component.onCompleted is the RIGHT place to call this even though the
     // module is usually not reachable yet at that point: the subscription is
     // accepted and armed as soon as the module appears — including a module
-    // installed mid-session by the package manager. Nothing is dropped and
-    // nothing blocks the GUI thread.
+    // installed mid-session by the package manager. Nothing blocks the GUI
+    // thread.
+    //
+    // ONE THING IT DOES NOT PROMISE: arming is not retroactive and the
+    // transports do not buffer. There is a window — roughly the 50-150 ms
+    // between the module's socket appearing and its replica going Valid — in
+    // which an emitted event reaches nobody. A module that fires a one-shot
+    // "ready" event synchronously inside its own init() can still be missed, by
+    // this path and by the blocking one it replaced alike. If a module's
+    // startup event matters, it must also expose a method the view can call
+    // after subscribing.
     //
     // Calling it twice for the same (module, event) is a no-op, so a view that
     // re-runs Component.onCompleted on reload will not receive doubled events.
+    // The de-duplication is verified against the registry, not assumed, so a
+    // subscription that was dropped underneath the bridge is re-armed by a
+    // second call rather than silently swallowed.
     //
     // Returns true if the subscription was ACCEPTED — which is not the same as
     // "is live right now". It returns false only for errors no retry can fix:
@@ -176,9 +189,14 @@ private:
     QMap<QString, QObject*> m_replicas;
     QMap<QString, QAbstractItemModelReplica*> m_modelReplicas;
 
-    // (module, event) pairs already handed to the transport. QML re-runs
-    // Component.onCompleted on a view reload, and the layer below deliberately
-    // does not de-duplicate (two lp_subscribe calls to the same event are two
-    // real subscriptions), so the de-dupe belongs here.
-    QSet<QPair<QString, QString>> m_eventSubscriptions;
+    // (module, event) -> subscription id already handed to the transport. QML
+    // re-runs Component.onCompleted on a view reload, and the layer below
+    // deliberately does not de-duplicate (two lp_subscribe calls to the same
+    // event are two real subscriptions), so the de-dupe belongs here.
+    //
+    // The id, not just the key, because this record can go stale: onModuleEvent
+    // checks it against LogosAPIClient::eventSubscriptionState() before
+    // short-circuiting, so a subscription that was dropped underneath us is
+    // re-armed instead of being swallowed as a duplicate.
+    QHash<QPair<QString, QString>, quint64> m_eventSubscriptions;
 };

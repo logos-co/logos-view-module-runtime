@@ -339,16 +339,27 @@ bool LogosQmlBridge::onModuleEvent(const QString& moduleName, const QString& eve
         return false;
     }
 
-    const QPair<QString, QString> key(moduleName, eventName);
-    if (m_eventSubscriptions.contains(key))
-        return true;                    // idempotent: QML may re-run onCompleted
-
     LogosAPIClient* client = m_logosAPI->getClient(moduleName);
     if (!client) {
         qWarning() << "LogosQmlBridge::onModuleEvent: no client for" << moduleName;
         return false;
     }
-    m_eventSubscriptions.insert(key);
+
+    // Idempotent: QML may re-run Component.onCompleted. But CHECK the record
+    // against the registry rather than trusting it — a subscription this bridge
+    // believes is live may have been dropped underneath it, and short-circuiting
+    // on a stale record would turn a legitimate re-subscribe into a silent
+    // success that never arms. Unknown means the registry is not tracking that
+    // id at all, so fall through and subscribe again.
+    const QPair<QString, QString> key(moduleName, eventName);
+    auto known = m_eventSubscriptions.constFind(key);
+    if (known != m_eventSubscriptions.constEnd()) {
+        if (client->eventSubscriptionState(known.value()) != LogosSubscriptionState::Unknown)
+            return true;
+        qDebug() << "LogosQmlBridge::onModuleEvent: stale subscription record for"
+                 << moduleName << "::" << eventName << "-- re-subscribing";
+        m_eventSubscriptions.remove(key);
+    }
 
     QPointer<LogosQmlBridge> self(this);
     const QString mod = moduleName;
@@ -357,7 +368,7 @@ bool LogosQmlBridge::onModuleEvent(const QString& moduleName, const QString& eve
     // transport when the module becomes reachable, and the layer below owns the
     // diagnostics (warn once on deferral, log on arm, warn loudly if it ever
     // becomes impossible).
-    client->onEventWhenAvailable(
+    const quint64 id = client->onEventWhenAvailable(
         moduleName, eventName,
         [self, mod](const QString& event, const QVariantList& data) {
             if (self)
@@ -369,6 +380,12 @@ bool LogosQmlBridge::onModuleEvent(const QString& moduleName, const QString& eve
             if (self && !armed)
                 self->m_eventSubscriptions.remove(key);
         });
+    if (!id) {
+        qWarning() << "LogosQmlBridge::onModuleEvent: subscription refused for"
+                   << moduleName << "::" << eventName;
+        return false;
+    }
+    m_eventSubscriptions.insert(key, id);
 
     qDebug() << "LogosQmlBridge: subscription accepted for" << moduleName << "::" << eventName;
     return true;
@@ -379,10 +396,12 @@ QStringList LogosQmlBridge::pendingEventSubscriptions() const
     if (!m_logosAPI) return QStringList();
     QStringList out;
     QSet<QString> seen;
-    for (const auto& key : m_eventSubscriptions) {
-        if (seen.contains(key.first)) continue;
-        seen.insert(key.first);
-        if (LogosAPIClient* client = m_logosAPI->getClient(key.first))
+    for (auto it = m_eventSubscriptions.keyBegin(), end = m_eventSubscriptions.keyEnd();
+         it != end; ++it) {
+        const QString& module = (*it).first;
+        if (seen.contains(module)) continue;
+        seen.insert(module);
+        if (LogosAPIClient* client = m_logosAPI->getClient(module))
             out += client->pendingEventSubscriptions();
     }
     return out;
