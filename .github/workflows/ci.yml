@@ -1,0 +1,48 @@
+name: CI
+
+# pull_request is unfiltered: stacked PRs (based on other feature branches)
+# must run CI too.
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # DeterminateSystems' installer: reliable on the macOS runners, where
+      # cachix/install-nix-action trips over pre-existing nix build users
+      # (eDSRecordAlreadyExists).
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - uses: cachix/cachix-action@v15
+        # The cache is an optimization: don't let a failed push in the
+        # action's post step fail a job whose tests all passed.
+        continue-on-error: true
+        with:
+          name: logos-co
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+
+      # The `default` check is a derivation whose checkPhase runs ctest over
+      # the whole suite (nix/test.nix) — building it IS running the tests, so
+      # there is no separate run step. -L streams the ctest output, which is
+      # the only place a failing case names itself.
+      #
+      # The system is resolved from the runner rather than mapped from
+      # matrix.os: the macOS runners have been both x86_64 and aarch64 over
+      # time, and a stale mapping fails as "attribute missing", which reads
+      # like a broken flake rather than a wrong arch.
+      - name: Build and run the test suite
+        run: |
+          system="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
+          echo "Running checks for ${system}"
+          nix build ".#checks.${system}.default" -L
