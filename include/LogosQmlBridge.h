@@ -139,9 +139,10 @@ public:
     // thread.
     //
     // ONE THING IT DOES NOT PROMISE: arming is not retroactive and the
-    // transports do not buffer. There is a window — roughly the 50-150 ms
-    // between the module's socket appearing and its replica going Valid — in
-    // which an emitted event reaches nobody. A module that fires a one-shot
+    // transports do not buffer. There is a brief window — between the module's
+    // socket appearing and its replica going Valid, whose length depends on the
+    // platform and the load — in which an emitted event reaches nobody. A
+    // module that fires a one-shot
     // "ready" event synchronously inside its own init() can still be missed, by
     // this path and by the blocking one it replaced alike. If a module's
     // startup event matters, it must also expose a method the view can call
@@ -154,10 +155,21 @@ public:
     // second call rather than silently swallowed.
     //
     // Returns true if the subscription was ACCEPTED — which is not the same as
-    // "is live right now". It returns false only for errors no retry can fix:
-    // no LogosAPI, an empty module or event name, or a VIEW module (those emit
-    // through their typed replica; use logos.module(name) and a Connections
-    // block instead).
+    // "is live right now". A module that is merely unreachable is still an
+    // acceptance: that is the whole point of this call. It returns false in
+    // five cases, all of them a fault in the request or in the bridge's own
+    // setup rather than a module that has yet to appear:
+    //   - no LogosAPI;
+    //   - an empty module or event name;
+    //   - a VIEW module (those emit through their typed replica; use
+    //     logos.module(name) and a Connections block instead);
+    //   - no client for the module — getClient() returned null, which means
+    //     LogosAPI could not build one at all, not that the module is down;
+    //   - the client refused the subscription (id 0). Defensive: the arguments
+    //     that make onEventWhenAvailable() refuse are all rejected above, so
+    //     this is unreachable today. It is documented because the two contracts
+    //     have to agree, and one of them changing is how they stop agreeing.
+    // Retrying any of these with the same arguments returns false again.
     Q_INVOKABLE bool onModuleEvent(const QString& moduleName, const QString& eventName);
 
     // Diagnostics: "<module>::<event>" for every subscription made via

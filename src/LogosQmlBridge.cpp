@@ -333,9 +333,14 @@ bool LogosQmlBridge::onModuleEvent(const QString& moduleName, const QString& eve
         // A view module's signals come off its typed replica, not the IPC event
         // channel; subscribing here would wait forever for something that never
         // publishes on that name.
-        qWarning() << "LogosQmlBridge::onModuleEvent:" << moduleName
-                   << "is a VIEW module -- use logos.module(\"" << moduleName
-                   << "\") and a Connections block for its signals";
+        // One formatted string, not a stream of operands: QDebug quotes each
+        // QString it is given and separates operands with a space, which turns
+        // the QML snippet below into logos.module(" "chat_module" ") — the one
+        // part of this message a reader is meant to copy.
+        qWarning().noquote()
+            << QStringLiteral("LogosQmlBridge::onModuleEvent: %1 is a VIEW module -- "
+                              "use logos.module(\"%1\") and a Connections block for "
+                              "its signals").arg(moduleName);
         return false;
     }
 
