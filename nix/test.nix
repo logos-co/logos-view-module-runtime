@@ -1,4 +1,4 @@
-{ pkgs, logosSdk, logosQtSdk, logosProtocol }:
+{ pkgs, logosSdk, logosQtHost, logosProtocol }:
 
 pkgs.stdenv.mkDerivation {
   pname = "logos-view-module-runtime-check";
@@ -25,7 +25,7 @@ pkgs.stdenv.mkDerivation {
     pkgs.qt6.qtremoteobjects
     pkgs.qt6.qtdeclarative
     logosSdk
-    logosQtSdk
+    logosQtHost
     logosProtocol
   ];
 
@@ -40,7 +40,7 @@ pkgs.stdenv.mkDerivation {
     # include dirs + the link interface (OpenSSL, Boost, nlohmann)
     # via the imported target — no need to stage a vendored copy.
     cmakeFlagsArray+=("-DLOGOS_CPP_SDK_ROOT=${logosSdk}")
-    cmakeFlagsArray+=("-DLOGOS_QT_SDK_ROOT=${logosQtSdk}")
+    cmakeFlagsArray+=("-DLOGOS_QT_HOST_ROOT=${logosQtHost}")
     cmakeFlagsArray+=("-DLOGOS_PROTOCOL_ROOT=${logosProtocol}")
     # Qt splits its host TOOLS into separate packages that must run on the
     # BUILD machine; -DQT_HOST_PATH=<qtbase> cannot reach them. Empty natively.

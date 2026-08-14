@@ -10,7 +10,7 @@ target_link_libraries(test_logos_qml_bridge PRIVATE
     Qt6::Test
     Qt6::Qml
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
 )
 
@@ -27,7 +27,7 @@ target_link_libraries(test_logos_qml_bridge_e2e PRIVATE
     Qt6::Test
     Qt6::Qml
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )
@@ -48,7 +48,7 @@ target_link_libraries(test_logos_qml_bridge_gui PRIVATE
     Qt6::Quick
     Qt6::Test
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )
@@ -67,7 +67,7 @@ target_link_libraries(test_logos_qml_bridge_result PRIVATE
     Qt6::Test
     Qt6::Qml
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )
@@ -86,7 +86,7 @@ target_link_libraries(test_logos_qml_bridge_handshake PRIVATE
     Qt6::Test
     Qt6::Qml
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )
@@ -107,7 +107,7 @@ target_link_libraries(test_bridge_identity PRIVATE
     Qt6::Test
     Qt6::Qml
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )
@@ -124,7 +124,7 @@ target_link_libraries(test_2proc_modules_host PRIVATE
     Qt6::Core
     Qt6::Network
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )
@@ -136,7 +136,7 @@ target_link_libraries(test_2proc_bridge_driver PRIVATE
     Qt6::Network
     Qt6::Qml
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )
