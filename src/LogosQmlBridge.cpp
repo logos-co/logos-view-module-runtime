@@ -22,6 +22,7 @@
 #include "logos_api_client.h"
 #include "logos_call_error.h"
 #include "logos_object.h"
+#include "token_manager.h"
 #include "logos_json_convert.h"  // logos::qvariantToNlohmann (canonical result serialization)
 
 namespace {
@@ -44,6 +45,37 @@ LogosQmlBridge::LogosQmlBridge(LogosAPI* api, QObject* parent)
     : QObject(parent)
     , m_logosAPI(api)
 {
+}
+
+LogosQmlBridge* LogosQmlBridge::forIdentity(const QString& identity, QObject* parent)
+{
+    // Build the LogosAPI first and bail before allocating the bridge: a bridge
+    // whose m_logosAPI is null answers every call with
+    // {"error":"LogosAPI not available"}, which is indistinguishable in the QML
+    // from a module that is merely down, and would hide the refusal.
+    LogosAPI* api = LogosAPI::forIdentity(identity);
+    if (!api) {
+        qWarning() << "LogosQmlBridge::forIdentity: no isolated token store for"
+                   << identity << "- refusing to build a bridge that would fall"
+                      " back to the host's authority";
+        return nullptr;
+    }
+
+    auto* bridge = new LogosQmlBridge(api, parent);
+    // Reparent AFTER construction: the bridge owns the api, so the two die
+    // together and callers keep deleting exactly one object.
+    api->setParent(bridge);
+    return bridge;
+}
+
+QString LogosQmlBridge::identity() const
+{
+    return m_logosAPI ? m_logosAPI->moduleName() : QString();
+}
+
+TokenManager* LogosQmlBridge::tokenStore() const
+{
+    return m_logosAPI ? m_logosAPI->getTokenManager() : nullptr;
 }
 
 QString LogosQmlBridge::callModule(const QString& module,

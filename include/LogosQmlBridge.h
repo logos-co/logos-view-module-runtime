@@ -8,6 +8,7 @@
 #include <QMap>
 
 class LogosAPI;
+class TokenManager;
 class QRemoteObjectNode;
 class QAbstractItemModelReplica;
 class LogosViewReplicaFactory;
@@ -42,6 +43,49 @@ class LogosQmlBridge : public QObject {
     Q_OBJECT
 public:
     explicit LogosQmlBridge(LogosAPI* api, QObject* parent = nullptr);
+
+    /**
+     * @brief A bridge that calls out AS `identity`, not as its host.
+     *
+     * The QML a view module ships runs INSIDE the host process, and until now
+     * the bridge handed to it was the host's own LogosAPI. That is not a
+     * cosmetic mislabelling: a LogosAPI carries the token store its calls
+     * present from, and the host's store is an ambient ring holding every
+     * loaded module's root auth token. A QML view given that bridge could call
+     * any module in the system — including ones it never declared — and the
+     * call authorised on the first try, with no `requestModule` anywhere in the
+     * log, because the target's own token was already sitting in the store.
+     *
+     * This builds the bridge on a LogosAPI bound to `identity`'s ISOLATED
+     * store (see LogosAPI::forIdentity), so the view starts with the bootstrap
+     * tokens only and has to ask capability_module for anything else — which is
+     * the point at which a policy can say no.
+     *
+     * Returns NULLPTR if the identity cannot be isolated; that is fatal for the
+     * view and must not be softened into "use the host's bridge instead".
+     *
+     * The returned bridge OWNS its LogosAPI (it is parented to the bridge), so
+     * the caller frees exactly one object, as before.
+     *
+     * The host still has to make `identity` a known caller by registering an
+     * auth token for it with capability_module — isolation alone would leave
+     * the view unable to obtain any token at all.
+     */
+    static LogosQmlBridge* forIdentity(const QString& identity,
+                                       QObject* parent = nullptr);
+
+    /** @brief The identity this bridge's calls are made as. */
+    QString identity() const;
+
+    /**
+     * @brief The token store this bridge's calls present tokens FROM.
+     *
+     * The identity that matters is this one, not the name: origin is never
+     * consulted on the hot path, which reads this store first and mints only on
+     * a miss. A bridge whose store is `&TokenManager::instance()` is running on
+     * the host's ambient ring however it is labelled.
+     */
+    TokenManager* tokenStore() const;
 
     // ── Backend (non-view) module calls via LogosAPI IPC ────────────────
     Q_INVOKABLE QString callModule(const QString& module,
