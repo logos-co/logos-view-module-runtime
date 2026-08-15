@@ -6,6 +6,18 @@ class QObject;
 class QRemoteObjectNode;
 class QMetaObject;
 
+// The HOST side of this interface. The module side is declared separately, by
+// logos-plugin-qt/cmake/LogosViewReplicaFactory.h.in, which logos_module()
+// instantiates into every ui_qml module — a module plugin has to compile
+// against Qt alone, and that repo is upstream of this one, so the two cannot
+// share a header. They bind at runtime through the IID string alone, where a
+// mismatch is silent: qobject_cast returns nullptr and the view never appears.
+//
+// That pair is CHECKED, not trusted: logos-module-builder (the one repo that
+// depends on both) runs `view-interface-abi` in CI, comparing the IID and the
+// pure-virtual list on both sides. Editing this class without editing the
+// template turns that check red.
+//
 // A tiny Qt plugin interface that lets a view module ship a typed
 // QRemoteObjectReplica factory alongside its backend plugin. The host loads
 // the factory via QPluginLoader and asks it to construct a replica from a
