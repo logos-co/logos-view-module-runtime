@@ -8,8 +8,15 @@
       url = "github:logos-co/logos-cpp-sdk";
       inputs.logos-nix.follows = "logos-nix";
     };
+    # Rev-pinned, not master-tracking: logos-qt-host (below) calls
+    # TokenManager::forIdentity / isolateIdentity, which live on
+    # logos-protocol's feat/per-client-token-store branch and are NOT on its
+    # master. Because logos-plugin-qt's logos-protocol `follows` THIS input,
+    # a master-tracking pin here would build the Qt host runtime against a
+    # protocol that lacks those symbols. c8bab12 is a fast-forward from
+    # master, so nothing on master is given up. Drop the rev once it merges.
     logos-protocol = {
-      url = "github:logos-co/logos-protocol";
+      url = "github:logos-co/logos-protocol/c8bab12834dbf92155b483546875e6078d17c74e";
       inputs.logos-nix.follows = "logos-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
@@ -29,8 +36,18 @@
     # surface that stays behind in qt-sdk: no logos_ui_plugin_context.h (that is
     # for ui_qml module backends, not for the host that loads them), no
     # logos_qt_lp_bridge.h / logos_qt_wire.h, no logos-qt-generator.
+    #
+    # Rev-pinned for the same reason logos-protocol is: `logos-qt-host` does
+    # not exist on logos-plugin-qt's master (8846fc5) — a master-tracking url
+    # fails to evaluate with "attribute 'logos-qt-host' missing". cc24fa1 is
+    # the tip of that repo's feat/b4-qt-host-windows-target, already rebased
+    # onto its master. It is the SUPERSET of the two branches carrying this
+    # work; the sibling feat/b4-qt-host-windows-target-8ccb1fc (989f6ae) omits
+    # commits that logos-module-builder pins, so pinning the superset here is
+    # what keeps one logos-qt-host in the downstream closure instead of two.
+    # Drop the rev once it merges.
     logos-plugin-qt = {
-      url = "github:logos-co/logos-plugin-qt";
+      url = "github:logos-co/logos-plugin-qt/cc24fa1c0c43b2d96c1dc165ee545a0321318b59";
       inputs.logos-nix.follows = "logos-nix";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.logos-protocol.follows = "logos-protocol";
