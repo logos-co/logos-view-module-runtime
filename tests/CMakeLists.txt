@@ -155,7 +155,7 @@ target_link_libraries(test_logos_qml_bridge_deferred PRIVATE
     Qt6::Test
     Qt6::Qml
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )
@@ -179,7 +179,7 @@ target_link_libraries(test_logos_qml_bridge_calls PRIVATE
     Qt6::Test
     Qt6::Qml
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )
