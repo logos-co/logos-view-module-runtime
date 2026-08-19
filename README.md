@@ -193,7 +193,11 @@ Item {
 ## Dependencies
 
 - Qt 6: `Core`, `Qml`, `RemoteObjects`
-- `logos-cpp-sdk` (for `LogosAPI` / `logos_api.h`)
+- `logos-plugin-qt`'s `logos-qt-host` (for `LogosAPI` / `logos_api.h`) —
+  the Qt host runtime, linked as `logos-qt-host::logos_qt_host`
+- `logos-protocol` (`token_manager.h`, `module_proxy.h`, `remote_transport.h`,
+  …) — carried transitively by `logos-qt-host`
+- `logos-cpp-sdk` (header-only types, via `logos-cpp-sdk::logos_headers`)
 
 That's it — deliberately no dependency on `logos-liblogos`, `logos-module`, or
 any specific module repo, so this runtime stays a thin shared layer.

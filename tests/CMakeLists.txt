@@ -10,7 +10,7 @@ target_link_libraries(test_logos_qml_bridge PRIVATE
     Qt6::Test
     Qt6::Qml
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
 )
 
@@ -27,7 +27,7 @@ target_link_libraries(test_logos_qml_bridge_e2e PRIVATE
     Qt6::Test
     Qt6::Qml
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )
@@ -48,7 +48,7 @@ target_link_libraries(test_logos_qml_bridge_gui PRIVATE
     Qt6::Quick
     Qt6::Test
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )
@@ -67,7 +67,7 @@ target_link_libraries(test_logos_qml_bridge_result PRIVATE
     Qt6::Test
     Qt6::Qml
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )
@@ -86,12 +86,33 @@ target_link_libraries(test_logos_qml_bridge_handshake PRIVATE
     Qt6::Test
     Qt6::Qml
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )
 
 add_test(NAME LogosQmlBridgeHandshakeTests COMMAND test_logos_qml_bridge_handshake)
+
+# Per-plugin identity: a bridge built for an identity presents tokens from that
+# identity's ISOLATED store, so an undeclared backend costs a real
+# capability_module handshake and is refused — where a host-identity bridge
+# reached it with no handshake at all.
+add_executable(test_bridge_identity
+    test_bridge_identity.cpp
+)
+
+target_link_libraries(test_bridge_identity PRIVATE
+    logos_view_module_runtime
+    Qt6::Core
+    Qt6::Test
+    Qt6::Qml
+    Qt6::RemoteObjects
+    logos-qt-host::logos_qt_host
+    logos-cpp-sdk::logos_headers
+    logos-protocol::logos_protocol
+)
+
+add_test(NAME BridgeIdentityTests COMMAND test_bridge_identity)
 
 # ── 2-process reproduction (cross-process boundary) ─────────────────────────
 # Two standalone executables (driven manually, not via ctest): the modules host
@@ -103,7 +124,7 @@ target_link_libraries(test_2proc_modules_host PRIVATE
     Qt6::Core
     Qt6::Network
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )
@@ -115,7 +136,7 @@ target_link_libraries(test_2proc_bridge_driver PRIVATE
     Qt6::Network
     Qt6::Qml
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )
@@ -134,7 +155,7 @@ target_link_libraries(test_logos_qml_bridge_deferred PRIVATE
     Qt6::Test
     Qt6::Qml
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )
@@ -158,7 +179,7 @@ target_link_libraries(test_logos_qml_bridge_calls PRIVATE
     Qt6::Test
     Qt6::Qml
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )
@@ -188,7 +209,7 @@ target_link_libraries(test_logos_qml_bridge_replay PRIVATE
     Qt6::Test
     Qt6::Qml
     Qt6::RemoteObjects
-    logos-qt-sdk::logos_qt_sdk
+    logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
     logos-protocol::logos_protocol
 )

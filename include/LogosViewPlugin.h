@@ -5,6 +5,12 @@
 class QObject;
 class QRemoteObjectHostBase;
 
+// The HOST side of this interface. The module side is declared separately, by
+// logos-view-module/cmake/LogosViewPluginBase.h.in; see the note in
+// LogosViewReplicaFactory.h for why they cannot share a header, and for the
+// `view-interface-abi` check in logos-module-builder that fails when the two
+// declarations drift apart.
+//
 // Qt plugin interface that ui-host uses to wire a view-module plugin into a
 // QRemoteObjectHost without reflection. A plugin implementing this interface:
 //

@@ -6,6 +6,29 @@ class QObject;
 class QRemoteObjectNode;
 class QMetaObject;
 
+// The HOST side of this interface. The module side is declared separately, by
+// logos-view-module/cmake/LogosViewReplicaFactory.h.in, which logos_module()
+// instantiates into every ui_qml module — a module plugin has to compile
+// against Qt alone, and there is no dependency edge between that repo and this
+// one in either direction, so the two cannot share a header. (The template
+// lived in logos-plugin-qt until the view-authoring concerns moved to
+// logos-view-module, which owns the ui_qml flavour end to end.) They bind at runtime through the IID string alone, where a
+// mismatch is silent: qobject_cast returns nullptr and the view never appears.
+//
+// That pair is CHECKED, not trusted: logos-module-builder (the one repo that
+// depends on both) runs `view-interface-abi` in CI. It compares the IID
+// `#define`, the RESOLVED argument of Q_DECLARE_INTERFACE below (the string
+// qobject_cast actually compares — it need not be the macro), this class's
+// base list, and its ordered pure-virtual list; and on the module side it
+// also checks the concrete plugin class's Q_PLUGIN_METADATA IID and
+// Q_INTERFACES against the IID declared here. Editing this class, or just
+// that macro argument, without editing the template turns the check red.
+//
+// This repo has no CI of its own, so the check does not run on changes to
+// THIS file at the time they are made — it runs when logos-module-builder
+// next bumps its logos-view-module-runtime pin. Editing this header is
+// therefore a two-repo change: land it, then bump the pin there.
+//
 // A tiny Qt plugin interface that lets a view module ship a typed
 // QRemoteObjectReplica factory alongside its backend plugin. The host loads
 // the factory via QPluginLoader and asks it to construct a replica from a
