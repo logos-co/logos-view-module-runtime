@@ -185,3 +185,40 @@ target_link_libraries(test_logos_qml_bridge_calls PRIVATE
 )
 
 add_test(NAME LogosQmlBridgeCallsTests COMMAND test_logos_qml_bridge_calls)
+
+# Readiness replay for QML hot reload. m_replicas is only ever populated through
+# module(), which loads a factory plugin — so covering the branch where replay
+# meets a genuinely Valid replica needs a real factory plugin and a real
+# published source, not just the empty/dropped maps the unit suite can build.
+add_library(test_replica_factory_plugin MODULE test_replica_factory_plugin.cpp)
+target_link_libraries(test_replica_factory_plugin PRIVATE
+    Qt6::Core
+    Qt6::RemoteObjects
+)
+target_include_directories(test_replica_factory_plugin PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+)
+
+add_executable(test_logos_qml_bridge_replay
+    test_logos_qml_bridge_replay.cpp
+)
+
+target_link_libraries(test_logos_qml_bridge_replay PRIVATE
+    logos_view_module_runtime
+    Qt6::Core
+    Qt6::Test
+    Qt6::Qml
+    Qt6::RemoteObjects
+    logos-qt-sdk::logos_qt_sdk
+    logos-cpp-sdk::logos_headers
+    logos-protocol::logos_protocol
+)
+
+# The bridge takes a filesystem path to the factory plugin, so the test needs
+# to know where CMake put it.
+target_compile_definitions(test_logos_qml_bridge_replay PRIVATE
+    TEST_REPLICA_FACTORY_PLUGIN="$<TARGET_FILE:test_replica_factory_plugin>"
+)
+add_dependencies(test_logos_qml_bridge_replay test_replica_factory_plugin)
+
+add_test(NAME LogosQmlBridgeReplayTests COMMAND test_logos_qml_bridge_replay)

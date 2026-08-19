@@ -401,6 +401,15 @@ bool LogosQmlBridge::isViewModuleReady(const QString& moduleName) const
     return false;
 }
 
+void LogosQmlBridge::replayViewModuleState()
+{
+    for (auto it = m_replicas.cbegin(); it != m_replicas.cend(); ++it) {
+        auto* rep = qobject_cast<QRemoteObjectReplica*>(it.value());
+        if (rep && rep->state() == QRemoteObjectReplica::Valid)
+            emit viewModuleReadyChanged(it.key(), true);
+    }
+}
+
 void LogosQmlBridge::setViewModuleSocket(const QString& moduleName,
                                          const QString& socketName)
 {

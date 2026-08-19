@@ -325,6 +325,27 @@ private slots:
         // still knows the socket so it can reacquire.
         QVERIFY(bridge.hasViewModuleSocket("foo"));
     }
+
+    // ── Readiness replay (hot reload) ────────────────────────────────────
+
+    void replayViewModuleState_noReplicas_emitsNothing()
+    {
+        LogosQmlBridge bridge(nullptr);
+        QSignalSpy spy(&bridge, &LogosQmlBridge::viewModuleReadyChanged);
+        bridge.replayViewModuleState();
+        QCOMPARE(spy.count(), 0);
+    }
+
+    void replayViewModuleState_afterCrash_staysSilent()
+    {
+        LogosQmlBridge bridge(nullptr);
+        bridge.setViewModuleSocket("foo", "sock-1");
+        bridge.notifyViewModuleCrashed("foo");
+
+        QSignalSpy spy(&bridge, &LogosQmlBridge::viewModuleReadyChanged);
+        bridge.replayViewModuleState();
+        QCOMPARE(spy.count(), 0);
+    }
 };
 
 QTEST_GUILESS_MAIN(TestLogosQmlBridge)

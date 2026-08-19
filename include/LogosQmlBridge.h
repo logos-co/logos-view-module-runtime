@@ -144,6 +144,16 @@ public:
     // True once the view module's replica is Valid (source meta received).
     Q_INVOKABLE bool isViewModuleReady(const QString& moduleName) const;
 
+    // Re-emit viewModuleReadyChanged for every replica that is already Valid.
+    //
+    // Replicas outlive the QML engine (they are parented here, with
+    // CppOwnership), so a view rebuilt against a fresh engine — hot reload —
+    // gets the cached replica back from module() without any state transition.
+    // Its Connections were created after the original Valid edge and would
+    // otherwise wait forever for a signal that already fired. Hosts call this
+    // once the new object tree is complete.
+    void replayViewModuleState();
+
     // Watch a QRemoteObjectPendingCall returned by a replica slot call and
     // invoke callbacks with the result. Replaces QtRemoteObjects.watch() so
     // QML plugins don't need to import QtRemoteObjects (keeping the sandbox
