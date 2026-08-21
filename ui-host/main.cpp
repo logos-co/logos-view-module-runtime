@@ -32,8 +32,35 @@
 #endif
 
 #include "logos_api.h"
+#include "logos_plugin_unload.h"
 #include "token_manager.h"
 #include "LogosViewPlugin.h"
+
+// The view's chance to finish, between "stop" and teardown.
+//
+// Budget. ViewModuleHost::stop() gives this process terminate() plus
+// waitForFinished(3000) before it resorts to kill(), and EVERYTHING after the
+// signal has to fit inside that 3s: unwinding app.exec() through the self-pipe
+// notifier, this grace period, then `delete pluginObject`, the
+// QRemoteObjectHost destructor that unlinks the QtRO socket, and process exit.
+// 2s spends most of the window on the view while keeping a margin that is
+// comfortably more than the teardown it precedes: the whole SIGTERM-to-exit
+// sequence for a plugin with no hook at all measures 1ms
+// (tests/test_ui_host_unload.cpp, noHookIsSilentAndImmediate), so the ~1s left
+// over is three orders of magnitude more than it has to cover.
+//
+// Note that the deadline is a default (coarse) QTimer, which Qt may fire up to
+// 5% early -- measured 1903ms for a nominal 2000ms. That errs toward giving up
+// sooner, which is the safe direction for a budget carve-out.
+//
+// This is deliberately SMALLER than logos_host's 3000ms. The grace period is
+// carved out of the caller's hard-kill budget, and ui-host's caller is less
+// patient than the module container's (3s here, 5s there). Sharing the helper
+// but not the constant is exactly why runPluginAboutToUnload takes the grace
+// period as a parameter. Raising this to 3000 would consume the whole budget
+// and leave the view hard-killed mid-teardown -- the precise failure the hook
+// exists to prevent.
+constexpr int kUnloadGraceMs = 2000;
 
 int main(int argc, char* argv[])
 {
@@ -256,6 +283,13 @@ int main(int argc, char* argv[])
     out.flush();
 
     const int rc = app.exec();
+
+    // Safe to run a nested event loop here: the application loop has already
+    // returned, so this is the same shape as logos_host's call site rather
+    // than a re-entrant exec(). Must come BEFORE `delete pluginObject` -- it is
+    // the plugin it asks, and the plugin has to still be alive to answer.
+    logos::runPluginAboutToUnload(pluginObject, kUnloadGraceMs);
+
     delete pluginObject;
     return rc;
 }

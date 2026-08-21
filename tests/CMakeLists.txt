@@ -222,3 +222,57 @@ target_compile_definitions(test_logos_qml_bridge_replay PRIVATE
 add_dependencies(test_logos_qml_bridge_replay test_replica_factory_plugin)
 
 add_test(NAME LogosQmlBridgeReplayTests COMMAND test_logos_qml_bridge_replay)
+
+# ── Module teardown hook (ui-host) ──────────────────────────────────────────
+#
+# Three fixture plugins that differ ONLY in how they answer aboutToUnload(),
+# and one test that spawns the real ui-host on each through the real
+# ViewModuleHost. See test_unload_fixture.cpp for why they keep a journal.
+#
+# Built from one source with UNLOAD_MODE switching the behaviour, so the three
+# cannot drift into differing in anything else -- which is the whole basis for
+# comparing their journals against each other.
+foreach(_mode_name_pair "none:0" "finishes:1" "hangs:2")
+    string(REPLACE ":" ";" _pair ${_mode_name_pair})
+    list(GET _pair 0 _name)
+    list(GET _pair 1 _mode)
+    set(_tgt test_unload_fixture_${_name})
+    add_library(${_tgt} MODULE test_unload_fixture.cpp)
+    target_link_libraries(${_tgt} PRIVATE Qt6::Core)
+    target_compile_definitions(${_tgt} PRIVATE UNLOAD_MODE=${_mode})
+endforeach()
+
+add_executable(test_ui_host_unload test_ui_host_unload.cpp)
+
+target_link_libraries(test_ui_host_unload PRIVATE
+    logos_view_module_runtime
+    Qt6::Core
+    Qt6::Network
+    Qt6::Test
+    Qt6::RemoteObjects
+    logos-qt-host::logos_qt_host
+    logos-cpp-sdk::logos_headers
+)
+
+target_compile_definitions(test_ui_host_unload PRIVATE
+    FIXTURE_PLUGIN_NONE="$<TARGET_FILE:test_unload_fixture_none>"
+    FIXTURE_PLUGIN_FINISHES="$<TARGET_FILE:test_unload_fixture_finishes>"
+    FIXTURE_PLUGIN_HANGS="$<TARGET_FILE:test_unload_fixture_hangs>"
+)
+
+add_dependencies(test_ui_host_unload
+    ui-host
+    test_unload_fixture_none
+    test_unload_fixture_finishes
+    test_unload_fixture_hangs
+)
+
+# ViewModuleHost::spawn() resolves the ui-host binary as a SIBLING of the
+# running executable (QCoreApplication::applicationDirPath()). That is the
+# production layout, and the test drives the production spawn path, so the test
+# binary has to live in bin/ beside it rather than in the tests dir.
+set_target_properties(test_ui_host_unload PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+add_test(NAME UiHostUnloadTests COMMAND test_ui_host_unload)
