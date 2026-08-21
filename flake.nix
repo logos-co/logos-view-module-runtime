@@ -60,6 +60,9 @@
     # its content is — verify by files, not by ancestry. (master also drops the
     # repo's cmake/ directory, whose view-side templates moved to
     # logos-view-module; nothing here ever consumed it.)
+    # Master-tracking again. This was briefly rev-pinned to logos-plugin-qt#23
+    # for cpp/logos_plugin_unload.h -- the shared host-side teardown helper
+    # ui-host calls below; that has merged (ef11c21).
     logos-plugin-qt = {
       url = "github:logos-co/logos-plugin-qt";
       inputs.logos-nix.follows = "logos-nix";
