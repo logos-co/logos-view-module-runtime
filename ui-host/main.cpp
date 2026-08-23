@@ -32,8 +32,8 @@
 #endif
 
 #include "logos_api.h"
+#include "logos_consumer.h"
 #include "logos_plugin_unload.h"
-#include "token_manager.h"
 #include "LogosViewPlugin.h"
 
 // The view's chance to finish, between "stop" and teardown.
@@ -209,8 +209,17 @@ int main(int argc, char* argv[])
     LogosAPI* logosAPI = new LogosAPI(moduleName);
     logosAPI->setParent(&app);
 
-    logosAPI->getTokenManager()->saveToken(QStringLiteral("core"), authToken);
-    logosAPI->getTokenManager()->saveToken(QStringLiteral("capability_module"), authToken);
+    // Adopt the per-spawn credential the PARENT minted and already registered
+    // with capability_module (basecamp's PluginLoader / standalone's MainWindow,
+    // both through logos::admitConsumer). This process only installs it — no
+    // isolation and no second registration, which would invalidate the very
+    // credential the parent is still holding.
+    //
+    // Was two saveToken() calls spelling "core" and "capability_module" by hand.
+    // Those keys are TokenManager::bootstrapKeys(), and this was the fifth place
+    // in the workspace that spelled them out; adoptConsumerCredential is the one
+    // that owns the set.
+    logos::adoptConsumerCredential(logosAPI, authToken);
 
     int methodIndex = pluginObject->metaObject()->indexOfMethod("initLogos(LogosAPI*)");
     if (methodIndex != -1) {

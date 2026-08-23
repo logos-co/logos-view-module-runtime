@@ -11,6 +11,11 @@
 #include <QStringList>
 #include <QPair>
 
+// logos::ConsumerIdentity — what a host gets back from logos::admitConsumer.
+// By value in the signature below rather than forward-declared, because a
+// caller has to be able to construct one to call it.
+#include "logos_consumer.h"
+
 class LogosAPI;
 class TokenManager;
 class QRemoteObjectNode;
@@ -49,33 +54,35 @@ public:
     explicit LogosQmlBridge(LogosAPI* api, QObject* parent = nullptr);
 
     /**
-     * @brief A bridge that calls out AS `identity`, not as its host.
+     * @brief A bridge that calls out AS an ADMITTED consumer, not as its host.
      *
-     * The QML a view module ships runs INSIDE the host process, and until now
-     * the bridge handed to it was the host's own LogosAPI. That is not a
-     * cosmetic mislabelling: a LogosAPI carries the token store its calls
-     * present from, and the host's store is an ambient ring holding every
-     * loaded module's root auth token. A QML view given that bridge could call
-     * any module in the system — including ones it never declared — and the
-     * call authorised on the first try, with no `requestModule` anywhere in the
-     * log, because the target's own token was already sitting in the store.
+     * The QML a view module ships runs INSIDE the host process, and until the
+     * per-plugin identity work the bridge handed to it was the host's own
+     * LogosAPI. That is not a cosmetic mislabelling: a LogosAPI carries the
+     * token store its calls present from, and the host's store is an ambient
+     * ring holding every loaded module's root auth token. A QML view given that
+     * bridge could call any module in the system — including ones it never
+     * declared — and the call authorised on the first try, with no
+     * `requestModule` anywhere in the log, because the target's own token was
+     * already sitting in the store.
      *
-     * This builds the bridge on a LogosAPI bound to `identity`'s ISOLATED
-     * store (see LogosAPI::forIdentity), so the view starts with the bootstrap
-     * tokens only and has to ask capability_module for anything else — which is
-     * the point at which a policy can say no.
+     * TAKES A ConsumerIdentity RATHER THAN A NAME, and that is the whole
+     * change. The predecessor of this function took a name and called
+     * LogosAPI::forIdentity, which is only HALF an identity: an isolated store,
+     * a credential nobody minted, and no registration at capability_module. Its
+     * own documentation admitted the gap ("the host still has to make
+     * `identity` a known caller"), and leaving that to the caller is exactly
+     * how two hosts ended up doing it differently and one of them not at all.
+     * logos::admitConsumer does all of it, in the one order that has no window
+     * in it, and hands back the object this takes.
      *
-     * Returns NULLPTR if the identity cannot be isolated; that is fatal for the
-     * view and must not be softened into "use the host's bridge instead".
+     * Returns NULLPTR for a falsy ConsumerIdentity; that is fatal for the view
+     * and must not be softened into "use the host's bridge instead".
      *
-     * The returned bridge OWNS its LogosAPI (it is parented to the bridge), so
-     * the caller frees exactly one object, as before.
-     *
-     * The host still has to make `identity` a known caller by registering an
-     * auth token for it with capability_module — isolation alone would leave
-     * the view unable to obtain any token at all.
+     * The returned bridge OWNS the LogosAPI in `consumer` (it is reparented to
+     * the bridge), so the caller frees exactly one object.
      */
-    static LogosQmlBridge* forIdentity(const QString& identity,
+    static LogosQmlBridge* forConsumer(const logos::ConsumerIdentity& consumer,
                                        QObject* parent = nullptr);
 
     /** @brief The identity this bridge's calls are made as. */

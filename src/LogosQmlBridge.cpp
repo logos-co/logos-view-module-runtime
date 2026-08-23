@@ -65,24 +65,24 @@ LogosQmlBridge::LogosQmlBridge(LogosAPI* api, QObject* parent)
 {
 }
 
-LogosQmlBridge* LogosQmlBridge::forIdentity(const QString& identity, QObject* parent)
+LogosQmlBridge* LogosQmlBridge::forConsumer(const logos::ConsumerIdentity& consumer,
+                                            QObject* parent)
 {
-    // Build the LogosAPI first and bail before allocating the bridge: a bridge
-    // whose m_logosAPI is null answers every call with
-    // {"error":"LogosAPI not available"}, which is indistinguishable in the QML
-    // from a module that is merely down, and would hide the refusal.
-    LogosAPI* api = LogosAPI::forIdentity(identity);
-    if (!api) {
-        qWarning() << "LogosQmlBridge::forIdentity: no isolated token store for"
-                   << identity << "- refusing to build a bridge that would fall"
-                      " back to the host's authority";
+    // Bail before allocating the bridge: a bridge whose m_logosAPI is null
+    // answers every call with {"error":"LogosAPI not available"}, which is
+    // indistinguishable in the QML from a module that is merely down, and would
+    // hide the refusal.
+    if (!consumer) {
+        qWarning() << "LogosQmlBridge::forConsumer: the consumer was not admitted"
+                      " - refusing to build a bridge that would fall back to the"
+                      " host's authority";
         return nullptr;
     }
 
-    auto* bridge = new LogosQmlBridge(api, parent);
+    auto* bridge = new LogosQmlBridge(consumer.api, parent);
     // Reparent AFTER construction: the bridge owns the api, so the two die
     // together and callers keep deleting exactly one object.
-    api->setParent(bridge);
+    consumer.api->setParent(bridge);
     return bridge;
 }
 

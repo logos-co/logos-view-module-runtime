@@ -21,9 +21,42 @@
 // and nothing else — which is the trap this work exists to avoid — EXCEPT that
 // the assertions are about the handshake COUNT and the STORE CONTENTS, never
 // about the name a call carries.
+//
+// ── AND THE STORE CONTENTS HAVE TO BE THE IDENTITY'S OWN ─────────────────────
+//
+// The isolated store used to be born holding a COPY of the host's
+// "core"/"capability_module" tokens, and case 3 below asserted exactly that —
+// it PINNED the elevation. A view holding the host's capability token
+// authorizes as the host at every callee (ModuleProxy::authorize answers
+// {"kind":"host"}) and satisfies informModuleToken's trusted-channel gate,
+// which is a write into another module's token map.
+//
+// A private store is now born EMPTY, and the host puts the identity's OWN
+// minted-and-registered credential in it — logos::admitConsumer, one operation
+// where this file's fixture and two applications each hand-rolled three steps.
+//
+// VALIDATED BY RUNNING THIS FILE AGAINST A logos-plugin-qt WITH THE ADOPT STEP
+// REMOVED from admitConsumer — mint, register, drop the credential on the
+// floor, which is precisely what every hand-rolled site did. 4 of 11 FAILED:
+//
+//   anAdmittedIdentitysStoreCarriesItsOwnCredentialAndNotTheHosts
+//       the store holds no credential at all
+//   anIdentityBridgeHandshakesForADeclaredTarget
+//       {"error":"Module source unavailable", "call to 'backend_module'
+//        rejected: token not recognized (re-exchange failed)"}
+//   anIdentityBridgeIsRefusedForAnUndeclaredBackend
+//       requestModuleCalls == 0: it never even got to ask, so the refusal
+//       under test never happened
+//   twoIdentitiesInOneProcessDoNotShareAToken
+//       alpha cannot reach its own declared target
+//
+// On master those four are green only because the copied host anchor is doing
+// the work the credential should be doing. That is the bug, stated as a
+// measurement.
 #include "LogosQmlBridge.h"
 
 #include "logos_api.h"
+#include "logos_consumer.h"
 #include "logos_instance.h"
 #include "logos_mode.h"
 #include "logos_provider_interface.h"
@@ -75,9 +108,11 @@ public:
 class CapabilityProvider : public LogosProviderObject {
 public:
     ModuleProxy* backendProxy = nullptr;
-    QSet<QString> knownCallers;                  // origins registered by the host
+    QSet<QString> knownCallers;                  // origins the host has registered
+    QHash<QString, QString> callerTokens;        // origin -> the credential it presents
     QHash<QString, QSet<QString>> declared;      // origin -> declared targets
     int requestModuleCalls = 0;
+    int informCalls = 0;
     QStringList refusedOrigins;
 
     QVariant callMethod(const QString& method, const QVariantList& args) override {
@@ -99,7 +134,17 @@ public:
         }
         return QVariant();
     }
-    bool informModuleToken(const QString&, const QString&) override { return true; }
+    // A CALLER BECOMES KNOWN BY BEING REGISTERED, which is what the real
+    // capability_module does: informModuleToken is the trust root learning
+    // (name, token). The fixture used to have the test poke knownCallers
+    // directly, which made every case here silently independent of whether the
+    // host ever registered anything — the exact defect the pure-QML path had.
+    bool informModuleToken(const QString& moduleName, const QString& token) override {
+        ++informCalls;
+        knownCallers.insert(moduleName);
+        callerTokens[moduleName] = token;
+        return true;
+    }
     QJsonArray getMethods() override { return QJsonArray{}; }
     void setEventListener(EventCallback) override {}
     void init(void*) override {}
@@ -122,6 +167,7 @@ struct HostFixture {
         , backendProxy(&backend)
         , capHost(LogosInstance::id("capability_module"))
         , capProxy(&cap)
+        , hostApiObject(nextHostName())
     {
         LogosModeConfig::setMode(LogosMode::Remote);
         cap.backendProxy = &backendProxy;
@@ -139,13 +185,50 @@ struct HostFixture {
                                            QString::fromLatin1(kCapToken));
     }
 
-    // Register `identity` the way a host does before handing out a bridge.
-    void registerIdentity(const QString& identity, const QStringList& declaredTargets)
+    // The POLICY half only: which targets this origin declared as dependencies.
+    // Becoming a KNOWN caller is no longer something a test can arrange behind
+    // the host's back — that happens when logos::admitConsumer registers the
+    // identity's credential, which is how it happens in production.
+    void declare(const QString& identity, const QStringList& declaredTargets)
     {
-        cap.knownCallers.insert(identity);
         cap.declared[identity] = QSet<QString>(declaredTargets.constBegin(),
                                                declaredTargets.constEnd());
     }
+
+    // The HOST's LogosAPI: the trusted channel logos::admitConsumer registers
+    // over. Its store is the ambient ring, which is where the fixture put the
+    // capability_module bootstrap token, so it IS the trusted channel exactly as
+    // basecamp's "core" LogosAPI is.
+    //
+    // ONE PER FIXTURE, UNDER A NAME NO OTHER FIXTURE USES, and both halves are
+    // load-bearing. Per fixture because a LogosAPI caches its LogosAPIClient
+    // per target, and this fixture tears down and rebuilds capability_module's
+    // QtRO host between tests — a client that outlives its provider holds a
+    // replica pointing at a dead endpoint, and the push then fails for reasons
+    // that have nothing to do with what the test is asserting (measured: every
+    // OTHER admission failed). Under a unique name because a provider binds a
+    // registry URL derived from its module name, and rebinding the same one
+    // while the previous host is still closing is its own flake.
+    LogosAPI hostApiObject;
+    LogosAPI* hostApi() { return &hostApiObject; }
+
+    static QString nextHostName()
+    {
+        static int n = 0;
+        return QStringLiteral("host_admitter_%1").arg(++n);
+    }
+
+    // Admit a consumer and give it a bridge — the whole of what a host does.
+    // Returns nullptr if either half failed, which is what a caller must treat
+    // as fatal for the view.
+    LogosQmlBridge* admitBridge(const QString& identity)
+    {
+        logos::ConsumerIdentity consumer = logos::admitConsumer(identity, hostApi());
+        lastCredential = consumer.credential;
+        return LogosQmlBridge::forConsumer(consumer);
+    }
+
+    QString lastCredential;
 
     void pump(int rounds = 40)
     {
@@ -194,7 +277,7 @@ private slots:
     void anIsolatedIdentitysStoreLacksTheTargetsRootToken()
     {
         HostFixture fx;
-        LogosQmlBridge* bridge = LogosQmlBridge::forIdentity(QStringLiteral("view_store"));
+        LogosQmlBridge* bridge = fx.admitBridge(QStringLiteral("view_store"));
         QVERIFY(bridge != nullptr);
         QCOMPARE(bridge->identity(), QStringLiteral("view_store"));
 
@@ -212,22 +295,82 @@ private slots:
         delete bridge;
     }
 
-    // ── 3. …but it does carry the bootstrap, or it could never ask ─────────
-    void anIsolatedIdentitysStoreCarriesTheBootstrap()
+    // ── 3. …but it does carry a credential, or it could never ask ──────────
+    //
+    // AND THE CREDENTIAL IS ITS OWN, not the host's. This assertion is the
+    // whole of task 1 as seen from the view side. It used to read
+    //
+    //     QCOMPARE(store->getToken("capability_module"), kCapToken);
+    //
+    // — i.e. it PINNED the elevation: the isolated view holding the host's own
+    // capability token, which authorizes as the host at every callee and
+    // satisfies ModuleProxy::informModuleToken's trusted-channel gate. A
+    // private store is now born empty and carries only what the host minted
+    // FOR THIS IDENTITY and registered before handing over.
+    void anAdmittedIdentitysStoreCarriesItsOwnCredentialAndNotTheHosts()
     {
         HostFixture fx;
-        LogosQmlBridge* bridge = LogosQmlBridge::forIdentity(QStringLiteral("view_bootstrap"));
+        LogosQmlBridge* bridge = fx.admitBridge(QStringLiteral("view_bootstrap"));
         QVERIFY(bridge != nullptr);
 
         TokenManager* store = bridge->tokenStore();
         QVERIFY(store != nullptr);
         QVERIFY(store != &TokenManager::instance());
-        QCOMPARE(store->getToken(QStringLiteral("capability_module")),
+
+        QVERIFY(!fx.lastCredential.isEmpty());
+        QCOMPARE(store->getToken(QStringLiteral("capability_module")), fx.lastCredential);
+        QCOMPARE(store->getToken(QStringLiteral("core")), fx.lastCredential);
+        QVERIFY(store->getToken(QStringLiteral("capability_module"))
+                != QString::fromLatin1(kCapToken));
+        // The host still holds its own, so this is not "the ring was cleared".
+        QCOMPARE(TokenManager::instance().getToken(QStringLiteral("capability_module")),
                  QString::fromLatin1(kCapToken));
-        // Bootstrap ONLY: "core" was never seeded by this fixture, and
-        // backend_module — which the ambient ring does hold — is absent.
-        QCOMPARE(store->tokenCount(), 1);
+        // No isolated identity anywhere in this process holds a value of the
+        // host's — the diagnostic a host's CI asserts on.
+        QVERIFY(TokenManager::identitiesSharingHostAnchor().isEmpty());
+
+        // Credential ONLY: backend_module — which the ambient ring does hold —
+        // is absent, and nothing else was installed.
+        QCOMPARE(store->tokenCount(), TokenManager::bootstrapKeys().size());
+
+        // And capability_module was told about it, with the value the view is
+        // actually presenting. Registered UNDER THIS NAME, not under the host's.
+        QVERIFY(fx.cap.knownCallers.contains(QStringLiteral("view_bootstrap")));
+        QCOMPARE(fx.cap.callerTokens.value(QStringLiteral("view_bootstrap")),
+                 fx.lastCredential);
         delete bridge;
+    }
+
+    // ── 3b. HALF an identity is inert, not powerful ────────────────────────
+    //
+    // LogosAPI::forIdentity on its own — an isolated store and nothing else —
+    // is what a host doing only the first hand-rolled step produces. It must be
+    // unable to reach anything, rather than reaching everything on the host's
+    // inherited anchor. This is the case that was RED before the store stopped
+    // being seeded from instance().
+    void anUnadmittedIdentityCanReachNothing()
+    {
+        HostFixture fx;
+        fx.declare(QStringLiteral("view_unadmitted"), {QStringLiteral("backend_module")});
+
+        LogosAPI* api = LogosAPI::forIdentity(QStringLiteral("view_unadmitted"));
+        QVERIFY(api != nullptr);
+        LogosQmlBridge bridge(api);
+
+        QVERIFY(api->getTokenManager() != &TokenManager::instance());
+        QVERIFY(api->getTokenManager()->getToken(QStringLiteral("capability_module")).isEmpty());
+
+        const QString payload = bridge.callModule(
+            QStringLiteral("backend_module"), QStringLiteral("echo"),
+            QVariantList() << QStringLiteral("hello"));
+
+        QVERIFY2(payloadIsError(payload),
+                 qPrintable(QStringLiteral("an unadmitted identity REACHED a backend: ")
+                            + payload));
+        QCOMPARE(fx.backend.calls, 0);
+        // It never became a known caller either, because nobody registered it.
+        QVERIFY(!fx.cap.knownCallers.contains(QStringLiteral("view_unadmitted")));
+        delete api;
     }
 
     // ── 4. A declared target now costs a real handshake ────────────────────
@@ -238,10 +381,9 @@ private slots:
     void anIdentityBridgeHandshakesForADeclaredTarget()
     {
         HostFixture fx;
-        fx.registerIdentity(QStringLiteral("view_declared"),
-                            {QStringLiteral("backend_module")});
+        fx.declare(QStringLiteral("view_declared"), {QStringLiteral("backend_module")});
 
-        LogosQmlBridge* bridge = LogosQmlBridge::forIdentity(QStringLiteral("view_declared"));
+        LogosQmlBridge* bridge = fx.admitBridge(QStringLiteral("view_declared"));
         QVERIFY(bridge != nullptr);
 
         const QString payload = bridge->callModule(
@@ -265,11 +407,13 @@ private slots:
     void anIdentityBridgeIsRefusedForAnUndeclaredBackend()
     {
         HostFixture fx;
-        // Known caller — so this is a POLICY refusal, not "who are you".
-        fx.registerIdentity(QStringLiteral("view_undeclared"), {});
+        // Declared NOTHING, but admitted — so this is a POLICY refusal, not
+        // "who are you". Admission is what makes it a known caller.
+        fx.declare(QStringLiteral("view_undeclared"), {});
 
-        LogosQmlBridge* bridge = LogosQmlBridge::forIdentity(QStringLiteral("view_undeclared"));
+        LogosQmlBridge* bridge = fx.admitBridge(QStringLiteral("view_undeclared"));
         QVERIFY(bridge != nullptr);
+        QVERIFY(fx.cap.knownCallers.contains(QStringLiteral("view_undeclared")));
 
         const QString payload = bridge->callModule(
             QStringLiteral("backend_module"), QStringLiteral("echo"),
@@ -291,12 +435,18 @@ private slots:
     void twoIdentitiesInOneProcessDoNotShareAToken()
     {
         HostFixture fx;
-        fx.registerIdentity(QStringLiteral("view_alpha"), {QStringLiteral("backend_module")});
-        fx.registerIdentity(QStringLiteral("view_beta"), {});
+        fx.declare(QStringLiteral("view_alpha"), {QStringLiteral("backend_module")});
+        fx.declare(QStringLiteral("view_beta"), {});
 
-        LogosQmlBridge* alpha = LogosQmlBridge::forIdentity(QStringLiteral("view_alpha"));
-        LogosQmlBridge* beta  = LogosQmlBridge::forIdentity(QStringLiteral("view_beta"));
+        LogosQmlBridge* alpha = fx.admitBridge(QStringLiteral("view_alpha"));
+        const QString alphaCredential = fx.lastCredential;
+        LogosQmlBridge* beta  = fx.admitBridge(QStringLiteral("view_beta"));
+        const QString betaCredential = fx.lastCredential;
         QVERIFY(alpha && beta);
+        // Two admissions, two DIFFERENT credentials. One shared secret would
+        // make them the same caller at every provider they reach.
+        QVERIFY(!alphaCredential.isEmpty());
+        QVERIFY(alphaCredential != betaCredential);
 
         QVERIFY(!payloadIsError(alpha->callModule(
             QStringLiteral("backend_module"), QStringLiteral("echo"),
@@ -322,16 +472,19 @@ private slots:
     // isolating that name would leave one client on the ambient ring and one on
     // the private store. forIdentity must return nullptr so the caller fails
     // the load rather than shipping a plugin that only looks contained.
-    void forIdentityRefusesANameAlreadyOnTheSharedStore()
+    void admitConsumerRefusesANameAlreadyOnTheSharedStore()
     {
         HostFixture fx;
         // A plain LogosAPI vends the shared store under this name.
         LogosAPI ambient(QStringLiteral("view_too_late"));
         QCOMPARE(ambient.getTokenManager(), &TokenManager::instance());
 
-        QCOMPARE(LogosQmlBridge::forIdentity(QStringLiteral("view_too_late")),
+        QCOMPARE(fx.admitBridge(QStringLiteral("view_too_late")),
                  static_cast<LogosQmlBridge*>(nullptr));
         QVERIFY(!TokenManager::isIsolated(QStringLiteral("view_too_late")));
+        // Nothing was registered either: a refusal that still told the trust
+        // root about a credential would leave a phantom caller behind.
+        QVERIFY(!fx.cap.knownCallers.contains(QStringLiteral("view_too_late")));
     }
 
     // ── 8. Nothing changed for a caller that never opts in ─────────────────
