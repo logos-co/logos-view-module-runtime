@@ -8,14 +8,16 @@
 //   EVERY loaded module. On the hot path a client asserts no identity at all —
 //   LogosAPIClient::invokeRemoteMethod reads the store first and only mints on
 //   a miss — so a QML view handed the HOST's LogosAPI finds the target's own
-//   root token already sitting there, presents it, and the provider (which
-//   accepts any token in its image's store) authorises. No `requestModule`
-//   appears anywhere, so no policy is ever consulted.
+//   root token already sitting there, presents it, and the provider — for which
+//   that value is its OWN CREDENTIAL, the trust anchor ModuleProxy::authorize
+//   accepts by definition — authorises. No `requestModule` appears anywhere, so
+//   no policy is ever consulted.
 //
 // The fixture below is that world, built out of real objects: two published
 // providers over real QtRO transports, an ambient ring pre-seeded exactly the
-// way module_manager pre-seeds it, and a capability_module that mints only for
-// declared (origin, target) pairs.
+// way module_manager pre-seeds it, a backend module holding its own credential
+// exactly the way a module image holds it, and a capability_module that mints
+// only for declared (origin, target) pairs.
 //
 // Every one of these tests would pass just as happily if `origin` were fixed
 // and nothing else — which is the trap this work exists to avoid — EXCEPT that
@@ -152,10 +154,74 @@ public:
     QString providerVersion() const override { return QStringLiteral("1.0.0"); }
 };
 
+// ── THE BACKEND MODULE'S OWN IMAGE, AND WHY IT IS A SECOND STORE ───────────
+//
+// A loaded module is a different IMAGE with a different TokenManager from the
+// host's ambient ring, and its store carries the module's OWN host-issued
+// credential. ONE value, TWO stores, written by two lines in two repos:
+//
+//   logos-liblogos/src/logos_core/module_manager.cpp:329-336
+//       the HOST mints authToken, sendToken()s it to the module, and caches it
+//       OUTBOUND under the module's name — the ambient-ring seed below.
+//   logos-module-loader-qt/src/host/module_initializer.cpp:169-170
+//       the MODULE's image writes that same value under both bootstrapKeys(),
+//       which is what TokenManager::credential() is derived from.
+//
+// This fixture used to COLLAPSE those two stores into one: both ModuleProxys
+// took the defaulted store, so the "module's" credential was whatever the
+// ambient ring happened to hold — the capability bootstrap, kCapToken. At
+// protocol 0.7 the collapse was invisible, because ModuleProxy::authorize
+// walked the flat token map and the host's own OUTBOUND entry authorized
+// directly. Protocol 0.8 split that map by direction: the scan is handed an
+// InboundView plus the store's credential and can no longer name the outbound
+// half at all. The collapsed fixture then presented kBackendRootToken to a
+// store whose credential was kCapToken, and case 1 went red with
+//   {"error":"Module source unavailable",
+//    "message":"call to 'backend_module' rejected: token not recognized
+//               (re-exchange failed)"}
+//
+// THAT WAS THE FIXTURE, NOT THE PRODUCT, and the difference is measurable
+// rather than argued. logos-protocol pins the surviving property at 0.8 in
+// tests/protocol/test_token_direction.cpp
+// (TheOwnCredentialStillAuthorizesAndStillGatesPushes): a module still
+// authorizes anyone presenting ITS OWN credential — which is exactly the value
+// liblogos caches in the ambient ring for every module it loads. 0.8 closed the
+// OUTBOUND-MAP route into a provider; it left the ANCHOR route open by design.
+// So case 1 stays green, for the reason it always documented, once the backend
+// is given the store a real module has.
+//
+// THE REMEDY THAT WAS NOT TAKEN: routing the ambient seed through
+// informModuleToken / saveInboundToken. That files a caller GRANT, and case 1
+// would then assert "a caller that was granted may call" — trivially true, and
+// blind to the escalation this file exists to record. The inbound-is-empty
+// assertion in case 1 is there so that substitution cannot be made quietly.
+TokenManager* backendImageStore()
+{
+    // isolateIdentity is process-global and one-shot while HostFixture is
+    // rebuilt per case, so isolate once and re-adopt every time rather than
+    // inheriting whatever the previous case left in the store.
+    static TokenManager* const store = []() -> TokenManager* {
+        if (!TokenManager::isolateIdentity(QStringLiteral("backend_module")))
+            return nullptr;
+        TokenManager& s = TokenManager::forIdentity(QStringLiteral("backend_module"));
+        // Never hand back the ambient ring under the guise of a module store:
+        // that is the collapse this function exists to undo.
+        return (&s == &TokenManager::instance()) ? nullptr : &s;
+    }();
+    if (store)
+        store->adoptCredential(QString::fromLatin1(kBackendRootToken));
+    return store;
+}
+
 // The host process: two live providers plus the ambient ring a real host has.
 struct HostFixture {
     RemoteTransportHost backendHost;
     BackendProvider backend;
+    // The backend module's OWN store — see backendImageStore(). Asserted
+    // non-null and distinct from the ambient ring in case 1, because a null
+    // here would silently default backendProxy back onto instance() and
+    // re-create the collapse.
+    TokenManager* backendStore;
     ModuleProxy backendProxy;
 
     RemoteTransportHost capHost;
@@ -164,7 +230,14 @@ struct HostFixture {
 
     HostFixture()
         : backendHost(LogosInstance::id("backend_module"))
-        , backendProxy(&backend)
+        , backendStore(backendImageStore())
+        , backendProxy(&backend, nullptr, backendStore)
+        // capability_module DELIBERATELY stays on the ambient ring: its
+        // credential is the host's kCapToken, which is what lets
+        // logos::admitConsumer's informModuleToken push clear
+        // ModuleProxy::informModuleToken's trusted-channel gate. Isolating it
+        // too would break cases 3 through 8 for reasons unrelated to any of
+        // them.
         , capHost(LogosInstance::id("capability_module"))
         , capProxy(&cap)
         , hostApiObject(nextHostName())
@@ -255,12 +328,40 @@ private slots:
     // deliberately: it is not the bug being fixed, it is the REASON the bridge
     // must not be given the host's LogosAPI. If this ever goes red the ambient
     // ring changed shape and every conclusion below needs re-deriving.
+    //
+    // STILL TRUE AT PROTOCOL 0.8, and that is the whole point of the direction
+    // split's blast radius being smaller than it looks. 0.8 stopped an OUTBOUND
+    // cache entry from authorizing an INBOUND call; it did not stop a store
+    // from authorizing its OWN credential, and the ambient ring's entry for a
+    // module IS that module's credential. The two assertions below say so
+    // MECHANICALLY, and they are here because outcome-only assertions let this
+    // case pass for the wrong reason: seed the ring with a value nobody holds
+    // and the call fails; seed the target with a caller GRANT instead and the
+    // call succeeds while asserting nothing at all.
     void aHostIdentityBridgeReachesAnUndeclaredBackendWithNoHandshake()
     {
         HostFixture fx;
         // Note what is NOT here: no registerIdentity, no declared targets.
         LogosAPI hostApi(QStringLiteral("basecamp_host"));
         LogosQmlBridge bridge(&hostApi);
+
+        // The backend really is a separate image, or the rest is theatre: a
+        // null store would have defaulted the proxy back onto the ambient ring
+        // and made the host's own entry trivially reachable.
+        QVERIFY(fx.backendStore != nullptr);
+        QVERIFY(fx.backendStore != &TokenManager::instance());
+
+        // MECHANISM 1. The value the host ring caches for a module IS that
+        // module's own credential — one secret in two stores, written by
+        // module_manager.cpp:336 and module_initializer.cpp:169-170. This is
+        // WHY the call below needs no handshake.
+        QCOMPARE(TokenManager::instance().getToken(QStringLiteral("backend_module")),
+                 fx.backendStore->credential());
+        // MECHANISM 2. Nothing was ever GRANTED to anybody. The reachability
+        // below is the anchor arm of ModuleProxy::authorize, not an inbound
+        // record — so this case cannot be "fixed" by informing the target of a
+        // caller, which would make it a tautology.
+        QVERIFY(fx.backendStore->inbound().keys().isEmpty());
 
         const QString payload = bridge.callModule(
             QStringLiteral("backend_module"), QStringLiteral("echo"),
@@ -269,6 +370,9 @@ private slots:
         QVERIFY2(!payloadIsError(payload), qPrintable(payload));
         QCOMPARE(fx.backend.calls, 1);
         QCOMPARE(fx.cap.requestModuleCalls, 0);   // ← no handshake at all
+        // Still no grant AFTER the call either: the successful call did not
+        // create the record that would explain it.
+        QVERIFY(fx.backendStore->inbound().keys().isEmpty());
     }
 
     // ── 2. The isolated store does not hold the target's root token ─────────
