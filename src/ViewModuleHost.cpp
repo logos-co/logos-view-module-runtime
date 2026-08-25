@@ -1,5 +1,7 @@
 #include "ViewModuleHost.h"
 
+#include <QLoggingCategory>
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -11,6 +13,11 @@
 #ifdef Q_OS_WIN
 #include <windows.h>
 #endif
+
+// Off by default: child stderr is one line per log statement the ui-host makes,
+// which is hundreds per app load and drowns everything else. Turn it back on
+// with QT_LOGGING_RULES="logos.viewhost.debug=true" when a child misbehaves.
+Q_LOGGING_CATEGORY(lcViewHost, "logos.viewhost", QtWarningMsg)
 
 ViewModuleHost::ViewModuleHost(QObject* parent)
     : QObject(parent)
@@ -26,11 +33,11 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
                            const QString& authToken)
 {
     if (m_process) {
-        qWarning() << "ViewModuleHost: process already running for" << m_moduleName;
+        qCWarning(lcViewHost) << "process already running for" << m_moduleName;
         return false;
     }
     if (authToken.isEmpty()) {
-        qWarning() << "ViewModuleHost: refusing to spawn ui-host for" << moduleName
+        qCWarning(lcViewHost) << "refusing to spawn ui-host for" << moduleName
                    << "with an empty auth token";
         return false;
     }
@@ -50,7 +57,7 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
 #endif
 
     if (!QFile::exists(uiHostPath)) {
-        qWarning() << "ViewModuleHost: ui-host binary not found at" << uiHostPath;
+        qCWarning(lcViewHost) << "ui-host binary not found at" << uiHostPath;
         return false;
     }
 
@@ -59,7 +66,7 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
     m_tokenServer = new QLocalServer(this);
     m_tokenServer->setSocketOptions(QLocalServer::UserAccessOption);
     if (!m_tokenServer->listen(tokenSocketName)) {
-        qWarning() << "ViewModuleHost: failed to listen on token socket for"
+        qCWarning(lcViewHost) << "failed to listen on token socket for"
                    << moduleName << ":" << m_tokenServer->errorString();
         delete m_tokenServer;
         m_tokenServer = nullptr;
@@ -100,7 +107,7 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
             ? static_cast<PROCESS_INFORMATION*>(m_procInfo)->dwThreadId : 0;
         m_procInfo = nullptr;  // QProcess owns and frees it; never hold it
         if (m_mainThreadId == 0) {
-            qWarning() << "ViewModuleHost: no main thread id for" << m_moduleName
+            qCWarning(lcViewHost) << "no main thread id for" << m_moduleName
                        << "- shutdown will fall back to kill()";
         }
     });
@@ -108,7 +115,7 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
 
     connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this, process](int exitCode, QProcess::ExitStatus) {
-        qDebug() << "ViewModuleHost: process exited for" << m_moduleName << "with code" << exitCode;
+        qCDebug(lcViewHost) << "process exited for" << m_moduleName << "code" << exitCode;
         if (m_process == process) {
             m_process = nullptr;
         }
@@ -126,7 +133,7 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
             m_stdoutBuffer.remove(0, newlineIdx + 1);
             if (!m_readyEmitted && line.trimmed() == "READY") {
                 m_readyEmitted = true;
-                qDebug() << "ViewModuleHost: process ready for" << m_moduleName;
+                qCDebug(lcViewHost) << "process ready for" << m_moduleName;
                 emit ready();
             }
         }
@@ -134,7 +141,7 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
 
     connect(process, &QProcess::readyReadStandardError, this, [this, process]() {
         QByteArray data = process->readAllStandardError();
-        qDebug() << "ui-host [" << m_moduleName << "]:" << data.trimmed();
+        qCDebug(lcViewHost).noquote() << "ui-host" << m_moduleName << ":" << data.trimmed();
     });
 
     QStringList args;
@@ -142,11 +149,11 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
          << "--path" << pluginPath
          << "--socket" << m_socketName;
 
-    qDebug() << "ViewModuleHost: spawning" << uiHostPath << "for" << moduleName;
+    qCDebug(lcViewHost) << "spawning" << uiHostPath << "for" << moduleName;
     m_process->start(uiHostPath, args);
 
     if (!process->waitForStarted(5000)) {
-        qWarning() << "ViewModuleHost: failed to start ui-host for" << moduleName;
+        qCWarning(lcViewHost) << "failed to start ui-host for" << moduleName;
         m_process = nullptr;
         delete process;
         if (m_tokenServer) {
@@ -167,7 +174,7 @@ void ViewModuleHost::stop()
         return;
     }
 
-    qDebug() << "ViewModuleHost: stopping process for" << m_moduleName;
+    qCDebug(lcViewHost) << "stopping process for" << m_moduleName;
 
     // Leave m_process pointing at the QProcess until the finished() handler
     // clears it, so any in-flight readyRead lambdas still see a valid pointer.
@@ -194,19 +201,19 @@ void ViewModuleHost::stop()
     if (posted) {
         if (process->waitForFinished(3000))
             return;
-        qWarning() << "ViewModuleHost: WM_QUIT not honoured by" << m_moduleName;
+        qCWarning(lcViewHost) << "WM_QUIT not honoured by" << m_moduleName;
     } else {
-        qWarning() << "ViewModuleHost: no main thread id for" << m_moduleName;
+        qCWarning(lcViewHost) << "no main thread id for" << m_moduleName;
     }
     // Fall through to kill(): terminate() would only add dead time here.
-    qWarning() << "ViewModuleHost: process did not exit gracefully, killing" << m_moduleName;
+    qCWarning(lcViewHost) << "process did not exit gracefully, killing" << m_moduleName;
     process->kill();
     process->waitForFinished(1000);
 #else
     process->terminate();
 
     if (!process->waitForFinished(3000)) {
-        qWarning() << "ViewModuleHost: process did not exit gracefully, killing" << m_moduleName;
+        qCWarning(lcViewHost) << "process did not exit gracefully, killing" << m_moduleName;
         process->kill();
         process->waitForFinished(1000);
     }

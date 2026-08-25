@@ -1,5 +1,11 @@
 #include "LogosQmlBridge.h"
+
+#include <QLoggingCategory>
 #include "LogosViewReplicaFactory.h"
+#include "LogosIntent.h"
+#include "LogosIntentRouter.h"
+
+#include <QUuid>
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -24,6 +30,10 @@
 #include "logos_object.h"
 #include "token_manager.h"
 #include "logos_json_convert.h"  // logos::qvariantToNlohmann (canonical result serialization)
+
+// One switch for this file. Debug is off by default; the warnings below still
+// show. Enable with QT_LOGGING_RULES="logos.qmlbridge.debug=true".
+Q_LOGGING_CATEGORY(lcQmlBridge, "logos.qmlbridge", QtWarningMsg)
 
 namespace {
 
@@ -96,12 +106,194 @@ TokenManager* LogosQmlBridge::tokenStore() const
     return m_logosAPI ? m_logosAPI->getTokenManager() : nullptr;
 }
 
+LogosQmlBridge::~LogosQmlBridge()
+{
+    // Never invoke a callback from a destructor: the QML engine may already be
+    // partway through its own teardown, and a JS frame entered from here has
+    // nowhere safe to return to. Pending requests are dropped silently; the
+    // router is told the bridge is gone and is responsible for failing anything
+    // it was still tracking.
+    m_pendingIntents.clear();
+
+    if (m_intentRouter) {
+        LogosIntentRouter* router = m_intentRouter;
+        m_intentRouter = nullptr;   // exactly once, even if the call re-enters
+        router->bridgeDestroyed(this);
+    }
+}
+
+// ── App-to-app intents ───────────────────────────────────────────────────────
+
+void LogosQmlBridge::setIntentRouter(LogosIntentRouter* router)
+{
+    m_intentRouter = router;
+}
+
+QJSValue LogosQmlBridge::toJsValue(const QVariant& v) const
+{
+    if (auto* engine = qjsEngine(this))
+        return engine->toScriptValue(v);
+    return QJSValue(v.toString());
+}
+
+void LogosQmlBridge::failIntentLocally(const QString& requestId, const QString& errorCode)
+{
+    deliverIntentResult(requestId,
+                        logos::intent::makeEnvelope(false, QVariant(), errorCode));
+}
+
+void LogosQmlBridge::request(const QString& intent,
+                             const QVariantMap& params,
+                             QJSValue callback)
+{
+    // Braces stripped so the id drops into JSON or a log line unquoted.
+    const QString requestId =
+        QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+    // RECORD BEFORE ROUTING: the router may answer synchronously, and an answer
+    // for an unrecorded id would be dropped.
+    PendingIntent pending;
+    pending.callback = callback;
+    pending.engine = qjsEngine(this);
+    pending.generation = m_intentGeneration;
+    m_pendingIntents.insert(requestId, pending);
+
+    // No validation here, deliberately — it is all policy. See LogosIntentRouter.
+    if (!m_intentRouter) {
+        // Must be indistinguishable from a shell with no matching provider.
+        failIntentLocally(requestId, logos::intent::errUnavailable());
+        return;
+    }
+
+    m_intentRouter->routeIntent(this, requestId, intent, params);
+}
+
+// A QJSValue belongs to the engine that made it. Handing one to another app's
+// engine yields null there, so anything crossing the intent boundary has to be
+// flattened to plain Qt containers first.
+//
+// This bites `respond` and not `request` only because request's params are typed
+// QVariantMap, which moc converts on the way in; `data` is an untyped QVariant,
+// so QML hands over the QJSValue wrapper untouched.
+static QVariant flattenForCrossEngine(const QVariant& v)
+{
+    if (v.userType() == qMetaTypeId<QJSValue>())
+        return v.value<QJSValue>().toVariant();
+    return v;
+}
+
+void LogosQmlBridge::respond(const QString& requestId,
+                             bool ok,
+                             const QVariant& data,
+                             const QString& error)
+{
+    // Verbatim, unvalidated, no ownership check — mirroring the no-policy shape
+    // of callModule's guard. The router is the single enforcement point for
+    // "does this endpoint own this request", and it enforces on POINTER
+    // identity, not on a name, because a reloaded app is a different endpoint.
+    if (!m_intentRouter)
+        return;
+
+    m_intentRouter->routeIntentResponse(this, requestId, ok,
+                                        flattenForCrossEngine(data), error);
+}
+
+int LogosQmlBridge::deliverIntentRequest(const QString& requestId,
+                                         const QString& intent,
+                                         const QVariantMap& params,
+                                         const QString& requesterName)
+{
+    // Synchronous emit so the receiver count is meaningful on return. A
+    // provider that declared `provides` but shipped no Connections block is
+    // otherwise indistinguishable from a slow one, and the frozen surface has
+    // no fourth symbol meaning "I am listening".
+    //
+    // The count is TOTAL receivers, so any C++ connection to intentRequested
+    // — including a QSignalSpy in a test — inflates it. A host must therefore
+    // not connect to this signal itself, or it destroys the one signal that
+    // distinguishes "not listening" from "slow".
+    const int receivers = this->receivers(SIGNAL(intentRequested(QString,QString,QVariantMap,QString)));
+
+    emit intentRequested(requestId, intent, params, requesterName);
+
+    // No log for receivers == 0: the count IS the report, and the host logs it
+    // with the provider name attached, which this side does not know.
+    return receivers;
+}
+
+void LogosQmlBridge::deliverIntentResult(const QString& requestId,
+                                         const QVariantMap& envelope)
+{
+    auto it = m_pendingIntents.find(requestId);
+    if (it == m_pendingIntents.end())
+        return;   // unknown or already delivered — both are no-ops
+
+    // ERASE BEFORE INVOKING: fire-once becomes a property of the container,
+    // not a guard flag a future edit could forget.
+    const PendingIntent pending = it.value();
+    m_pendingIntents.erase(it);
+
+    if (!pending.callback.isCallable())
+        return;   // nothing to invoke — a C++ caller, or an app that passed a non-function
+
+    if (pending.engine.isNull()) {
+        // Hot reload swapped the engine between request and result.
+        qCWarning(lcQmlBridge) << "intent result dropped, engine gone" << requestId;
+        return;
+    }
+
+    // ALWAYS QUEUED: makes "never fires synchronously" unconditional, and stops
+    // a provider's respond() re-entering the requester's JS on the same stack.
+    //
+    // The generation check is what makes abandonment reach this far. The entry
+    // left m_pendingIntents above, so abandonPendingIntents() clearing the map
+    // cannot cancel what is already queued here; comparing generations can.
+    // Without it a hot reload between this line and the next event-loop turn
+    // would run a callback against torn-down JS, which is exactly what
+    // "drop every pending callback uninvoked" promises will not happen.
+    QMetaObject::invokeMethod(this, [this, envelope, pending]() {
+        if (pending.generation != m_intentGeneration) return;
+        if (pending.engine.isNull()) return;
+        if (!pending.callback.isCallable()) return;
+
+        // The callback's OWN engine, not qjsEngine(this). We recorded the
+        // engine per-request precisely because a reload can rebind the bridge
+        // to a new one; building the argument from the bridge's current engine
+        // would then hand an old-engine callback a new-engine value, which is
+        // the cross-engine class of bug flattenForCrossEngine exists to avoid.
+        QJSEngine* engine = pending.engine.data();
+        QJSValue cb = pending.callback;
+        cb.call(QJSValueList() << engine->toScriptValue(QVariant(envelope)));
+    }, Qt::QueuedConnection);
+}
+
+void LogosQmlBridge::abandonPendingIntents()
+{
+    ++m_intentGeneration;
+
+    if (m_pendingIntents.isEmpty())
+        return;
+
+    const QStringList ids = m_pendingIntents.keys();
+    m_pendingIntents.clear();   // clear first: nothing below may invoke them
+
+    if (m_intentRouter)
+        m_intentRouter->intentsAbandoned(this, ids);
+}
+
+QStringList LogosQmlBridge::pendingIntentRequestIds() const
+{
+    QStringList ids = m_pendingIntents.keys();
+    ids.sort();   // deterministic for tests and logs
+    return ids;
+}
+
 QString LogosQmlBridge::callModule(const QString& module,
                                    const QString& method,
                                    const QVariantList& args)
 {
     if (m_viewModuleSockets.contains(module)) {
-        qWarning() << "LogosQmlBridge::callModule:" << module
+        qCWarning(lcQmlBridge) << "callModule:" << module
                    << "is a view module — use logos.module(\"" << module
                    << "\")." << method << "(...) instead.";
         return QStringLiteral("{\"error\":\"view modules must be called via logos.module()\"}");
@@ -185,7 +377,7 @@ void LogosQmlBridge::callModuleAsync(const QString& module,
     };
 
     if (m_viewModuleSockets.contains(module)) {
-        qWarning() << "LogosQmlBridge::callModuleAsync:" << module
+        qCWarning(lcQmlBridge) << "callModuleAsync:" << module
                    << "is a view module — use logos.module() instead.";
         invokeCallback("{\"error\":\"view modules must be called via logos.module()\"}");
         return;
@@ -288,11 +480,7 @@ void LogosQmlBridge::watch(const QVariant& pendingCall,
     // Convert QtRO's returnValue (a QVariant) to a JS value preserving its
     // type (int → number, bool → bool, QString → string, QVariantMap → object,
     // …).
-    auto toJs = [this](const QVariant& v) -> QJSValue {
-        if (auto* engine = qjsEngine(this))
-            return engine->toScriptValue(v);
-        return QJSValue(v.toString());
-    };
+    auto toJs = [this](const QVariant& v) -> QJSValue { return toJsValue(v); };
 
     if (call.isFinished()) {
         if (onSuccess.isCallable()) {
@@ -332,7 +520,7 @@ QObject* LogosQmlBridge::module(const QString& moduleName)
 
     QObject* replica = factory->acquire(node);
     if (!replica) {
-        qWarning() << "LogosQmlBridge::module: factory->acquire() returned null for"
+        qCWarning(lcQmlBridge) << "module: factory->acquire() returned null for"
                    << moduleName;
         return nullptr;
     }
@@ -373,7 +561,7 @@ QObject* LogosQmlBridge::model(const QString& moduleName, const QString& modelNa
 
     auto* node = getOrCreateNode(moduleName);
     if (!node) {
-        qWarning() << "LogosQmlBridge::model: no node for" << moduleName;
+        qCWarning(lcQmlBridge) << "model: no node for" << moduleName;
         return nullptr;
     }
 
@@ -381,7 +569,7 @@ QObject* LogosQmlBridge::model(const QString& moduleName, const QString& modelNa
                                         : QtRemoteObjects::FetchRootSize;
     QAbstractItemModelReplica* m = node->acquireModel(key, initialAction);
     if (!m) {
-        qWarning() << "LogosQmlBridge::model: acquireModel failed for" << key;
+        qCWarning(lcQmlBridge) << "model: acquireModel failed for" << key;
         return nullptr;
     }
     m_modelReplicas[key] = m;
@@ -449,7 +637,7 @@ void LogosQmlBridge::setViewReplicaPlugin(const QString& moduleName,
 
 void LogosQmlBridge::notifyViewModuleCrashed(const QString& moduleName)
 {
-    qWarning() << "LogosQmlBridge: view module crashed" << moduleName;
+    qCWarning(lcQmlBridge) << "view module crashed" << moduleName;
     dropViewModuleCaches(moduleName);
     emit viewModuleReadyChanged(moduleName, false);
     emit viewModuleCrashed(moduleName);
@@ -472,11 +660,11 @@ bool LogosQmlBridge::onModuleEvent(const QString& moduleName, const QString& eve
     // not the answer; it removed ~417 s (macOS) / 361 s (Linux) of blocked GUI
     // thread at startup. The subscription becomes deferrable instead.
     if (!m_logosAPI) {
-        qWarning() << "LogosQmlBridge::onModuleEvent: LogosAPI not available";
+        qCWarning(lcQmlBridge) << "onModuleEvent: LogosAPI not available";
         return false;
     }
     if (moduleName.isEmpty() || eventName.isEmpty()) {
-        qWarning() << "LogosQmlBridge::onModuleEvent: empty module or event name"
+        qCWarning(lcQmlBridge) << "onModuleEvent: empty module or event name"
                    << moduleName << eventName;
         return false;
     }
@@ -488,7 +676,7 @@ bool LogosQmlBridge::onModuleEvent(const QString& moduleName, const QString& eve
         // QString it is given and separates operands with a space, which turns
         // the QML snippet below into logos.module(" "chat_module" ") — the one
         // part of this message a reader is meant to copy.
-        qWarning().noquote()
+        qCWarning(lcQmlBridge).noquote()
             << QStringLiteral("LogosQmlBridge::onModuleEvent: %1 is a VIEW module -- "
                               "use logos.module(\"%1\") and a Connections block for "
                               "its signals").arg(moduleName);
@@ -497,7 +685,7 @@ bool LogosQmlBridge::onModuleEvent(const QString& moduleName, const QString& eve
 
     LogosAPIClient* client = m_logosAPI->getClient(moduleName);
     if (!client) {
-        qWarning() << "LogosQmlBridge::onModuleEvent: no client for" << moduleName;
+        qCWarning(lcQmlBridge) << "onModuleEvent: no client for" << moduleName;
         return false;
     }
 
@@ -512,8 +700,8 @@ bool LogosQmlBridge::onModuleEvent(const QString& moduleName, const QString& eve
     if (known != m_eventSubscriptions.constEnd()) {
         if (client->eventSubscriptionState(known.value()) != LogosSubscriptionState::Unknown)
             return true;
-        qDebug() << "LogosQmlBridge::onModuleEvent: stale subscription record for"
-                 << moduleName << "::" << eventName << "-- re-subscribing";
+        qCDebug(lcQmlBridge) << "stale subscription, re-subscribing"
+                             << moduleName << "::" << eventName;
         m_eventSubscriptions.remove(key);
     }
 
@@ -537,13 +725,12 @@ bool LogosQmlBridge::onModuleEvent(const QString& moduleName, const QString& eve
                 self->m_eventSubscriptions.remove(key);
         });
     if (!id) {
-        qWarning() << "LogosQmlBridge::onModuleEvent: subscription refused for"
+        qCWarning(lcQmlBridge) << "onModuleEvent: subscription refused for"
                    << moduleName << "::" << eventName;
         return false;
     }
     m_eventSubscriptions.insert(key, id);
 
-    qDebug() << "LogosQmlBridge: subscription accepted for" << moduleName << "::" << eventName;
     return true;
 }
 
@@ -587,7 +774,7 @@ QRemoteObjectNode* LogosQmlBridge::getOrCreateNode(const QString& moduleName)
 
     auto socketIt = m_viewModuleSockets.constFind(moduleName);
     if (socketIt == m_viewModuleSockets.cend()) {
-        qWarning() << "LogosQmlBridge: no socket registered for view module" << moduleName;
+        qCWarning(lcQmlBridge) << "no socket registered for view module" << moduleName;
         return nullptr;
     }
 
@@ -604,28 +791,28 @@ LogosViewReplicaFactory* LogosQmlBridge::loadFactory(const QString& moduleName)
 
     auto pathIt = m_replicaPluginPaths.constFind(moduleName);
     if (pathIt == m_replicaPluginPaths.cend() || pathIt.value().isEmpty()) {
-        qWarning() << "LogosQmlBridge: no replica factory plugin registered for"
+        qCWarning(lcQmlBridge) << "no replica factory plugin registered for"
                    << moduleName;
         return nullptr;
     }
 
     const QString path = pathIt.value();
     if (!QFileInfo::exists(path)) {
-        qWarning() << "LogosQmlBridge: replica factory plugin not found at" << path;
+        qCWarning(lcQmlBridge) << "replica factory plugin not found at" << path;
         return nullptr;
     }
 
     auto* loader = new QPluginLoader(path, this);
     QObject* instance = loader->instance();
     if (!instance) {
-        qWarning() << "LogosQmlBridge: failed to load replica factory plugin"
+        qCWarning(lcQmlBridge) << "failed to load replica factory plugin"
                    << path << ":" << loader->errorString();
         loader->deleteLater();
         return nullptr;
     }
     auto* factory = qobject_cast<LogosViewReplicaFactory*>(instance);
     if (!factory) {
-        qWarning() << "LogosQmlBridge: plugin at" << path
+        qCWarning(lcQmlBridge) << "plugin at" << path
                    << "does not implement LogosViewReplicaFactory";
         loader->unload();
         loader->deleteLater();

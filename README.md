@@ -16,6 +16,11 @@ future Logos host application can link the same library and use the same
     via `LogosAPI` (IPC), or to a view module via a private
     `QRemoteObjectDynamicReplica`. Results are serialized to JSON strings so
     QML always sees a string.
+  - `LogosIntent.h` — the **frozen** app-to-app intent vocabulary: the six
+    error codes, the intent-name grammar, the payload rules and the result
+    envelope. Header-only and not a `QObject`, so both a view module and a
+    host's broker include the same definitions and cannot disagree about what
+    an error code means. See "App-to-app intents" below.
   - `ViewModuleHost` — spawns a `ui-host` child process for a given view
     module plugin, generates a unique local socket name, watches stdout for
     `READY`, and emits `ready()`. The parent then points `LogosQmlBridge` at
@@ -189,6 +194,55 @@ Item {
     }
 }
 ```
+
+## App-to-app intents
+
+One app asks for a capability; the shell decides who services it. This repo owns
+the **frozen half** of that surface — the part apps compile against — and
+nothing else. Resolution, consent and dispatch are host policy and live in the
+host (in Basecamp, `IntentBroker`).
+
+Three members on the bridge, plus `LogosIntent.h`:
+
+```qml
+// Ask. You never name a provider, and never learn which apps are installed.
+logos.request("wallet.send", { to: "0xabc", amount: 12.5 }, function (res) {
+    if (res.ok) console.log(res.data.txHash)
+    else        console.log(res.error)   // one of six codes
+})
+
+// Answer, if you declared `provides` in metadata.json.
+Connections {
+    target: logos
+    function onIntentRequested(requestId, intent, params, requesterName) {
+        logos.respond(requestId, true, { txHash: "0x…" }, "")
+    }
+}
+```
+
+Frozen means these signatures do not change: `request`, `respond`,
+`intentRequested`, the codes in `LogosIntent.h`, and the payload bounds. A host
+may replace everything behind them.
+
+Points a host implementer has to honour, because the surface assumes them:
+
+- **`respond` takes all four arguments.** A provider that omits `error` on a
+  failure path must not fall into reporting success, so there are no defaults.
+- **`requesterName` is host-attested.** The router knows who called by
+  construction; it is not read from the payload, and a caller cannot forge it.
+- **Payloads are plain data only** — `isCanonicalPayload()` bounds depth,
+  size and type, and refuses `QObject*` and `QJSValue`. That is what stops one
+  app handing another a live handle into its engine. `respond` flattens
+  engine-bound values on the way out for the same reason.
+- **A provider may only report `cancelled`, `timeout`, `failed` or
+  `bad_request`.** `normalizeError()` coerces anything else, because
+  `not_declared` and `unavailable` carry meaning a provider is not entitled to
+  assert — both reveal whether a provider exists at all.
+- **Every request terminates exactly once**, asynchronously, even on immediate
+  failure.
+
+Full reference: `logos-basecamp/docs/app-to-app-intents.md` and
+`logos-tutorial/guide-intents-for-app-developers.md`.
 
 ## Dependencies
 

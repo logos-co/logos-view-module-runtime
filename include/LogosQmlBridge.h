@@ -16,12 +16,17 @@
 // caller has to be able to construct one to call it.
 #include "logos_consumer.h"
 
+#include <QJSValue>
+#include <QJSEngine>   // QPointer<QJSEngine> member needs the complete type
+#include <QPointer>
+
 class LogosAPI;
 class TokenManager;
 class QRemoteObjectNode;
 class QAbstractItemModelReplica;
 class LogosViewReplicaFactory;
 class QPluginLoader;
+class LogosIntentRouter;
 
 // ── LogosQmlBridge ───────────────────────────────────────────────────────────
 //
@@ -52,6 +57,51 @@ class LogosQmlBridge : public QObject {
     Q_OBJECT
 public:
     explicit LogosQmlBridge(LogosAPI* api, QObject* parent = nullptr);
+    ~LogosQmlBridge() override;
+
+    // ── App-to-app intents — THE FROZEN SURFACE ─────────────────────────
+    //
+    // Three symbols, and they will not change. See LogosIntent.h for the error
+    // codes, the name grammar and the envelope shape.
+    //
+    // Requester:
+    //   logos.request("wallet.send", { chain_id: 1, to: addr },
+    //       function (res) {
+    //           if (res.ok) showReceipt(res.data.tx_hash)
+    //           else        showError(res.error)
+    //       })
+    //
+    // Provider:
+    //   Connections {
+    //       target: logos
+    //       function onIntentRequested(requestId, intent, params, requesterName) {
+    //           logos.respond(requestId, true, { tx_hash: hash }, "")
+    //       }
+    //   }
+    //
+    // request() returns VOID on purpose. The requester never receives a
+    // requestId, so it cannot forge a respond() for its own request and cannot
+    // hold a handle to whoever answered. That single property is what lets the
+    // router underneath be replaced without any app noticing.
+    //
+    // The callback fires EXACTLY ONCE and ALWAYS ASYNCHRONOUSLY — even for an
+    // immediate failure with no router attached. No app can accidentally come
+    // to depend on a synchronous reply.
+    //
+    // `params` and `res.data` reach QML as real JS values, not JSON strings:
+    // res.data.tx_hash works, JSON.parse(res.data) does not. This differs from
+    // callModuleAsync deliberately.
+    Q_INVOKABLE void request(const QString& intent,
+                             const QVariantMap& params,
+                             QJSValue callback);
+
+    // Answer a request from intentRequested. All four arguments required: a
+    // provider that omits `error` on a failure path must not default into a
+    // success. Forwarded verbatim — see LogosIntentRouter.
+    Q_INVOKABLE void respond(const QString& requestId,
+                             bool ok,
+                             const QVariant& data,
+                             const QString& error);
 
     /**
      * @brief A bridge that calls out AS an ADMITTED consumer, not as its host.
@@ -178,6 +228,33 @@ public:
     void setViewModuleSocket(const QString& moduleName, const QString& socketName);
     void setViewReplicaPlugin(const QString& moduleName, const QString& pluginPath);
 
+    // ── Intent host-side API — NOT reachable from QML ────────────────────
+    //
+    // None are Q_INVOKABLE or slots, so none appear in the metaobject. That
+    // absence IS the trust boundary: an app must not install its own router,
+    // deliver a result to itself, or read another request's id. A test asserts
+    // it. A null router is legal — request() then answers "unavailable".
+    void setIntentRouter(LogosIntentRouter* router);
+
+    // Emitted synchronously so the returned receiver count is meaningful:
+    // 0 means the provider declared the intent but is not listening, which the
+    // frozen surface cannot report any other way. Hosts must not connect to
+    // intentRequested themselves — it would inflate the count.
+    int deliverIntentRequest(const QString& requestId,
+                             const QString& intent,
+                             const QVariantMap& params,
+                             const QString& requesterName);
+
+    // Complete a pending request. Erases before invoking, so a second delivery
+    // for the same id is a no-op by construction rather than by a guard.
+    void deliverIntentResult(const QString& requestId, const QVariantMap& envelope);
+
+    // Hot reload: drop every pending callback uninvoked and tell the router
+    // which ids went, since their QJSValues belong to a dying engine.
+    void abandonPendingIntents();
+
+    QStringList pendingIntentRequestIds() const;
+
     // Called when the view module's child process exits unexpectedly.
     void notifyViewModuleCrashed(const QString& moduleName);
 
@@ -261,12 +338,47 @@ signals:
                              const QString& eventName,
                              const QVariantList& data);
 
+    // FROZEN. A provider handles this to receive a request routed to it.
+    // requesterName is host-attested — the router knows who called by
+    // construction — so it is trustworthy in a way a self-declared name in the
+    // payload would not be. It may be empty when the requester is the shell.
+    void intentRequested(const QString& requestId,
+                         const QString& intent,
+                         const QVariantMap& params,
+                         const QString& requesterName);
+
 private:
     void dropViewModuleCaches(const QString& moduleName);
     QRemoteObjectNode* getOrCreateNode(const QString& moduleName);
     LogosViewReplicaFactory* loadFactory(const QString& moduleName);
+    QJSValue toJsValue(const QVariant& v) const;
+    void failIntentLocally(const QString& requestId, const QString& errorCode);
 
     LogosAPI* m_logosAPI;
+
+    // A pending request: the caller's callback, plus the engine it came from.
+    //
+    // Held in a NAMED MEMBER rather than captured in a lambda the way
+    // callModuleAsync's fire-once latch is, because three things outside the
+    // call have to reach it: the destructor, a hot reload, and the router
+    // delivering a result minutes later.
+    //
+    // The engine is stamped per record so a result arriving after a hot reload
+    // can be dropped rather than invoked against a QJSValue whose engine is
+    // gone.
+    struct PendingIntent {
+        QJSValue callback;
+        QPointer<QJSEngine> engine;
+        // The generation this request was accepted in.
+        quint64 generation = 0;
+    };
+
+    LogosIntentRouter* m_intentRouter = nullptr;
+    QHash<QString, PendingIntent> m_pendingIntents;
+
+    // Bumped by abandonPendingIntents(). Never reset: a wrapped counter would
+    // let a stale delivery match a live generation.
+    quint64 m_intentGeneration = 0;
 
     // Per-view-module state
     QMap<QString, QString> m_viewModuleSockets;
