@@ -74,6 +74,27 @@ target_link_libraries(test_logos_qml_bridge_result PRIVATE
 
 add_test(NAME LogosQmlBridgeResultTests COMMAND test_logos_qml_bridge_result)
 
+# App-to-app intent surface: the frozen three symbols, the callback contract
+# (exactly once / always async / real JS objects), the responsibility boundary
+# on respond(), and the metaobject trust boundary. Null LogosAPI throughout —
+# no sockets, no ui-host, no packages.
+add_executable(test_logos_qml_bridge_intents
+    test_logos_qml_bridge_intents.cpp
+)
+
+target_link_libraries(test_logos_qml_bridge_intents PRIVATE
+    logos_view_module_runtime
+    Qt6::Core
+    Qt6::Test
+    Qt6::Qml
+    Qt6::RemoteObjects
+    logos-qt-host::logos_qt_host
+    logos-cpp-sdk::logos_headers
+    logos-protocol::logos_protocol
+)
+
+add_test(NAME LogosQmlBridgeIntentTests COMMAND test_logos_qml_bridge_intents)
+
 # Capability-handshake reproduction: un-pre-seeded target token + real
 # requestModule round-trip against a published capability_module provider.
 add_executable(test_logos_qml_bridge_handshake

@@ -63,6 +63,8 @@ add_library(logos_view_module_runtime STATIC
     include/ViewModuleHost.h
     include/LogosViewPlugin.h
     include/LogosViewReplicaFactory.h
+    include/LogosIntent.h
+    include/LogosIntentRouter.h
 )
 
 target_include_directories(logos_view_module_runtime PUBLIC
