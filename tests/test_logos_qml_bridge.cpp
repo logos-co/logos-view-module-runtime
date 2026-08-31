@@ -28,6 +28,7 @@
 #include <QTest>
 #include <QVariant>
 #include <QVariantList>
+#include <QRemoteObjectPendingCall>
 #include <QVariantMap>
 
 namespace {
@@ -345,6 +346,63 @@ private slots:
         QSignalSpy spy(&bridge, &LogosQmlBridge::viewModuleReadyChanged);
         bridge.replayViewModuleState();
         QCOMPARE(spy.count(), 0);
+    }
+
+    // --- watch() type dispatch -------------------------------------------
+    //
+    // Regression: watch() must recognise what repc actually hands it. repc
+    // emits slots returning QRemoteObjectPendingReply<T>, a SUBCLASS of
+    // QRemoteObjectPendingCall with its own metatype, and registers a converter
+    // between them. A guard comparing metatypes for IDENTITY is false for every
+    // real replica call, so watch() would treat a live call as a plain value and
+    // fire onSuccess synchronously with the unresolved wrapper.
+    //
+    // The reply here is default-constructed, so it never finishes: a correct
+    // watch() hands it to the watcher and calls NEITHER callback synchronously.
+    // The identity-comparison bug is visible as a synchronous onSuccess.
+    void watch_pendingReply_doesNotFireCallbacksSynchronously()
+    {
+        qRegisterMetaType<QRemoteObjectPendingReply<int>>();
+        QMetaType::registerConverter<QRemoteObjectPendingReply<int>,
+                                     QRemoteObjectPendingCall>();
+
+        QJSEngine engine;
+        engine.globalObject().setProperty("hits", 0);
+        QJSValue cb = engine.evaluate("(function(){ hits = hits + 1; })");
+        QVERIFY(cb.isCallable());
+
+        LogosQmlBridge bridge(nullptr);
+        bridge.watch(QVariant::fromValue(QRemoteObjectPendingReply<int>{}), cb, cb);
+
+        QCOMPARE(engine.globalObject().property("hits").toInt(), 0);
+    }
+
+    // The case the guard exists for: a plain value is delivered straight to
+    // onSuccess rather than being unwrapped into a never-finishing call.
+    void watch_plainValue_isDeliveredToOnSuccess()
+    {
+        QJSEngine engine;
+        engine.globalObject().setProperty("got", QJSValue());
+        QJSValue cb = engine.evaluate("(function(v){ got = v; })");
+        QJSValue err = engine.evaluate("(function(){ got = 'ERROR'; })");
+
+        LogosQmlBridge bridge(nullptr);
+        bridge.watch(QVariant::fromValue(42), cb, err);
+
+        QCOMPARE(engine.globalObject().property("got").toInt(), 42);
+    }
+
+    void watch_invalidValue_goesToOnError()
+    {
+        QJSEngine engine;
+        engine.globalObject().setProperty("errored", false);
+        QJSValue cb  = engine.evaluate("(function(){})");
+        QJSValue err = engine.evaluate("(function(){ errored = true; })");
+
+        LogosQmlBridge bridge(nullptr);
+        bridge.watch(QVariant(), cb, err);
+
+        QVERIFY(engine.globalObject().property("errored").toBool());
     }
 };
 
