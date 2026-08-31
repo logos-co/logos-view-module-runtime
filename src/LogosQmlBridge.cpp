@@ -15,6 +15,7 @@
 #include <QQmlEngine>
 #include <QRemoteObjectNode>
 #include <QRemoteObjectReplica>
+#include <QMetaType>
 #include <QRemoteObjectPendingCall>
 #include <QAbstractItemModelReplica>
 #include <QPluginLoader>
@@ -475,12 +476,35 @@ void LogosQmlBridge::watch(const QVariant& pendingCall,
                            QJSValue onSuccess,
                            QJSValue onError)
 {
-    auto call = pendingCall.value<QRemoteObjectPendingCall>();
-
     // Convert QtRO's returnValue (a QVariant) to a JS value preserving its
     // type (int → number, bool → bool, QString → string, QVariantMap → object,
     // …).
     auto toJs = [this](const QVariant& v) -> QJSValue { return toJsValue(v); };
+
+    // Not a pending call? Then it is already the value — deliver it.
+    //
+    // Without this the failure is silent: .value<QRemoteObjectPendingCall>() on
+    // a type mismatch default-constructs one, whose error is InvalidMessage, and
+    // isFinished() is `error != InvalidMessage` — never true. The watcher below
+    // then never fires, so neither callback runs and nothing is logged.
+    //
+    // Delivering the raw value is also correct for an in-process backend, whose
+    // slots return values rather than pending calls.
+    if (pendingCall.metaType() != QMetaType::fromType<QRemoteObjectPendingCall>()) {
+        if (!pendingCall.isValid()) {
+            qWarning() << "LogosQmlBridge::watch: called with an invalid value —"
+                          " the backend slot probably does not exist, or the"
+                          " module is not available";
+            if (onError.isCallable())
+                onError.call(QJSValueList() << QJSValue(QStringLiteral("call failed")));
+            return;
+        }
+        if (onSuccess.isCallable())
+            onSuccess.call(QJSValueList() << toJs(pendingCall));
+        return;
+    }
+
+    auto call = pendingCall.value<QRemoteObjectPendingCall>();
 
     if (call.isFinished()) {
         if (onSuccess.isCallable()) {
