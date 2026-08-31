@@ -488,9 +488,14 @@ void LogosQmlBridge::watch(const QVariant& pendingCall,
     // isFinished() is `error != InvalidMessage` — never true. The watcher below
     // then never fires, so neither callback runs and nothing is logged.
     //
+    // canConvert, NOT a metatype comparison: repc slots return
+    // QRemoteObjectPendingReply<T>, a SUBCLASS with its own metatype, and repc
+    // registers a converter to QRemoteObjectPendingCall. Comparing metatypes for
+    // identity is therefore false for every real replica call.
+    //
     // Delivering the raw value is also correct for an in-process backend, whose
     // slots return values rather than pending calls.
-    if (pendingCall.metaType() != QMetaType::fromType<QRemoteObjectPendingCall>()) {
+    if (!pendingCall.canConvert<QRemoteObjectPendingCall>()) {
         if (!pendingCall.isValid()) {
             qWarning() << "LogosQmlBridge::watch: called with an invalid value —"
                           " the backend slot probably does not exist, or the"
