@@ -119,6 +119,16 @@ inline bool isValidName(const QString& name)
     return true;
 }
 
+// "logos." is the PLATFORM's namespace — liblogos, logoscore, anything below
+// whichever shell is running. It is reserved here, in the frozen half, because
+// it outlives any particular shell.
+//
+// A SHELL's own namespace is deliberately NOT reserved here. Basecamp reserves
+// "basecamp." in its IntentRegistry, because which shell owns which prefix is
+// policy, and policy belongs in the disposable half — a second frontend must be
+// able to reserve its own prefix without a change to this header. Adding one
+// here would look like tightening a rule and would in fact be moving a decision
+// into the layer that cannot change.
 inline bool isReservedName(const QString& name)
 {
     return name.startsWith(QStringLiteral("logos."));

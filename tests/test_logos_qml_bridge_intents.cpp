@@ -158,7 +158,7 @@ private slots:
 void TestLogosQmlBridgeIntents::testNameGrammarAccepts()
 {
     QVERIFY(isValidName(QStringLiteral("packages.show")));
-    QVERIFY(isValidName(QStringLiteral("logos.repositories.manage")));
+    QVERIFY(isValidName(QStringLiteral("basecamp.repositories.manage")));
     QVERIFY(isValidName(QStringLiteral("a.b_c.d0")));
     QVERIFY(isValidName(QStringLiteral("wallet.send")));
     QVERIFY(isValidName(QStringLiteral("a.b.c.d")));            // 4 segments, the max
@@ -184,10 +184,11 @@ void TestLogosQmlBridgeIntents::testNameGrammarRejects()
 
 void TestLogosQmlBridgeIntents::testReservedNames()
 {
-    QVERIFY(isReservedName(QStringLiteral("logos.repositories.manage")));
+    QVERIFY(isReservedName(QStringLiteral("logos.core.restart")));
     QVERIFY(!isReservedName(QStringLiteral("packages.show")));
     // "logosx.foo" must not be caught by a sloppy prefix test.
     QVERIFY(!isReservedName(QStringLiteral("logosx.foo")));
+    QVERIFY(!isReservedName(QStringLiteral("basecamp.settings.open")));
 }
 
 void TestLogosQmlBridgeIntents::testErrorCodesClosedSet()
