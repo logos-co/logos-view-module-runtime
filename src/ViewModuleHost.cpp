@@ -101,6 +101,10 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
     process->setCreateProcessArgumentsModifier(
         [this](QProcess::CreateProcessArguments* args) {
             m_procInfo = args->processInformation;
+            // ui-host is a console-subsystem PE, so a GUI parent (which has no
+            // console to share) gets one console WINDOW per view module. Its
+            // stdout/stderr are already on QProcess pipes.
+            args->flags |= CREATE_NO_WINDOW;
         });
     connect(process, &QProcess::started, this, [this]() {
         m_mainThreadId = m_procInfo
