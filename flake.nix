@@ -4,9 +4,14 @@
   inputs = {
     logos-nix.url = "github:logos-co/logos-nix";
     nixpkgs.follows = "logos-nix/nixpkgs";
+    # The protocol `follows` is the same rule logos-plugin-qt below states at
+    # length, and this input was the one place it was missing: cpp-sdk's own
+    # logos-protocol resolved independently, so the lock carried TWO protocol
+    # revisions and the closure two of every function-local static in there.
     logos-cpp-sdk = {
       url = "github:logos-co/logos-cpp-sdk";
       inputs.logos-nix.follows = "logos-nix";
+      inputs.logos-protocol.follows = "logos-protocol";
     };
     # Master-tracking. This was rev-pinned to c8bab12 on
     # feat/per-client-token-store because logos-qt-host (below) calls
