@@ -11,6 +11,7 @@
 #include <QCoreApplication>
 #include <QCommandLineParser>
 #include <QLocalSocket>
+#include <QFileInfo>
 #include <QPluginLoader>
 #include <QRemoteObjectHost>
 #include <QAbstractItemModel>
@@ -220,6 +221,17 @@ int main(int argc, char* argv[])
     // in the workspace that spelled them out; adoptConsumerCredential is the one
     // that owns the set.
     logos::adoptConsumerCredential(logosAPI, authToken);
+
+    // Tell the module where it is installed.
+    const int contextIndex =
+        pluginObject->metaObject()->indexOfMethod("initModuleContext(QString)");
+    if (contextIndex != -1) {
+        QMetaObject::invokeMethod(
+            pluginObject, "initModuleContext",
+            Qt::DirectConnection,
+            Q_ARG(QString, QFileInfo(pluginPath).absolutePath()));
+        qDebug() << "ui-host: gave" << moduleName << "its module path";
+    }
 
     int methodIndex = pluginObject->metaObject()->indexOfMethod("initLogos(LogosAPI*)");
     if (methodIndex != -1) {
