@@ -1,4 +1,4 @@
-{ pkgs, logosSdk, logosQtHost, logosProtocol }:
+{ pkgs, logosSdk, logosQtHost, logosProtocol, logosModule }:
 
 pkgs.stdenv.mkDerivation {
   pname = "logos-view-module-runtime-check";
@@ -42,6 +42,7 @@ pkgs.stdenv.mkDerivation {
     cmakeFlagsArray+=("-DLOGOS_CPP_SDK_ROOT=${logosSdk}")
     cmakeFlagsArray+=("-DLOGOS_QT_HOST_ROOT=${logosQtHost}")
     cmakeFlagsArray+=("-DLOGOS_PROTOCOL_ROOT=${logosProtocol}")
+    cmakeFlagsArray+=("-DLOGOS_MODULE_ROOT=${logosModule}")
     # Qt splits its host TOOLS into separate packages that must run on the
     # BUILD machine; -DQT_HOST_PATH=<qtbase> cannot reach them. Empty natively.
     ${pkgs.lib.concatMapStringsSep "\n    "
@@ -58,6 +59,14 @@ pkgs.stdenv.mkDerivation {
   checkPhase = ''
     runHook preCheck
     export QT_QPA_PLATFORM=offscreen
+    # The sandbox test stages its malicious plugin under an exec-capable dir and
+    # runs pre-install, so point the engine at Qt's own QML modules.
+    export SANDBOX_TEST_TMPDIR="$TMPDIR"
+    export QML2_IMPORT_PATH="${pkgs.qt6.qtdeclarative}/${pkgs.qt6.qtbase.qtQmlPrefix}"
+    export QML_IMPORT_PATH="$QML2_IMPORT_PATH"
+    ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+      export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}"
+    ''}
     ctest --output-on-failure
     runHook postCheck
   '';
@@ -70,7 +79,7 @@ pkgs.stdenv.mkDerivation {
   '';
 
   meta = with pkgs.lib; {
-    description = "Unit tests for logos-view-module-runtime (LogosQmlBridge)";
+    description = "Unit tests for logos-view-module-runtime";
     platforms = platforms.unix ++ platforms.windows;
     license = licenses.mit;
   };
