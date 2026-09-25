@@ -188,12 +188,10 @@ void CoreDependencyLoaderTest::runsBatchesInSubmissionOrder()
 
 void CoreDependencyLoaderTest::ownerThreadWorkPostedByALoadRunsBeforeTheCallback()
 {
-    // The invariant PluginLoader depends on. logos_core_load_module POSTS its
-    // capability-module registration to the owner thread (runOnOwner) rather
-    // than running it inline when called off that thread. onSuccess is posted
-    // after all of them, so it must be delivered last — otherwise a ui-host
-    // spawned from onSuccess could call a dependency that is not registered
-    // yet and be refused.
+    // The invariant PluginLoader depends on. A load POSTS work to the owner
+    // thread rather than running it inline when called off that thread, and
+    // onSuccess is posted after all of it, so it must be delivered last —
+    // otherwise a ui-host spawned from onSuccess could act before that work ran.
     QStringList order;
     CoreDependencyLoader loader;
     auto poster = [this, &order](const QString& name, bool) {

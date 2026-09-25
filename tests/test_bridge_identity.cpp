@@ -34,12 +34,13 @@
 // which is a write into another module's token map.
 //
 // A private store is now born EMPTY, and the host puts the identity's OWN
-// minted-and-registered credential in it — logos::admitConsumer, one operation
-// where this file's fixture and two applications each hand-rolled three steps.
+// credential in it: the runtime admits the plugin (capability_module mints and
+// records the credential) and the host adopts it, logos::adoptAdmittedConsumer.
+// HostFixture::admitBridge plays the runtime's half against the stand-in.
 //
-// VALIDATED BY RUNNING THIS FILE AGAINST A logos-plugin-qt WITH THE ADOPT STEP
-// REMOVED from admitConsumer — mint, register, drop the credential on the
-// floor, which is precisely what every hand-rolled site did. 4 of 11 FAILED:
+// VALIDATED, when hosts still minted, BY RUNNING THIS FILE WITH THE ADOPT STEP
+// REMOVED — the credential registered and then dropped on the floor. 4 of 11
+// FAILED:
 //
 //   anAdmittedIdentitysStoreCarriesItsOwnCredentialAndNotTheHosts
 //       the store holds no credential at all
@@ -58,6 +59,7 @@
 #include "LogosQmlBridge.h"
 
 #include "logos_api.h"
+#include "logos_api_client.h"
 #include "logos_consumer.h"
 #include "logos_instance.h"
 #include "logos_mode.h"
@@ -233,11 +235,10 @@ struct HostFixture {
         , backendStore(backendImageStore())
         , backendProxy(&backend, nullptr, backendStore)
         // capability_module DELIBERATELY stays on the ambient ring: its
-        // credential is the host's kCapToken, which is what lets
-        // logos::admitConsumer's informModuleToken push clear
-        // ModuleProxy::informModuleToken's trusted-channel gate. Isolating it
-        // too would break cases 3 through 8 for reasons unrelated to any of
-        // them.
+        // credential is the host's kCapToken, which is what lets admitBridge's
+        // stand-in admission clear ModuleProxy::informModuleToken's
+        // trusted-channel gate. Isolating it too would break cases 3 through 8
+        // for reasons unrelated to any of them.
         , capHost(LogosInstance::id("capability_module"))
         , capProxy(&cap)
         , hostApiObject(nextHostName())
@@ -259,19 +260,18 @@ struct HostFixture {
     }
 
     // The POLICY half only: which targets this origin declared as dependencies.
-    // Becoming a KNOWN caller is no longer something a test can arrange behind
-    // the host's back — that happens when logos::admitConsumer registers the
-    // identity's credential, which is how it happens in production.
+    // Becoming a KNOWN caller is not something a test arranges behind the
+    // host's back — that happens when the runtime admits the identity, which
+    // admitBridge plays.
     void declare(const QString& identity, const QStringList& declaredTargets)
     {
         cap.declared[identity] = QSet<QString>(declaredTargets.constBegin(),
                                                declaredTargets.constEnd());
     }
 
-    // The HOST's LogosAPI: the trusted channel logos::admitConsumer registers
-    // over. Its store is the ambient ring, which is where the fixture put the
-    // capability_module bootstrap token, so it IS the trusted channel exactly as
-    // basecamp's "core" LogosAPI is.
+    // The HOST's LogosAPI: the channel admitBridge plays the runtime's
+    // admission over. Its store is the ambient ring, which is where the fixture
+    // put the capability_module bootstrap token.
     //
     // ONE PER FIXTURE, UNDER A NAME NO OTHER FIXTURE USES, and both halves are
     // load-bearing. Per fixture because a LogosAPI caches its LogosAPIClient
@@ -291,12 +291,19 @@ struct HostFixture {
         return QStringLiteral("host_admitter_%1").arg(++n);
     }
 
-    // Admit a consumer and give it a bridge — the whole of what a host does.
-    // Returns nullptr if either half failed, which is what a caller must treat
-    // as fatal for the view.
+    // Admit a consumer and give it a bridge. The runtime's half is played here:
+    // capability_module learns the credential it minted (over the host's
+    // channel, as the stand-in cannot mint). The host's half is the real one:
+    // adopt it. Returns nullptr if either failed, which is what a caller must
+    // treat as fatal for the view.
     LogosQmlBridge* admitBridge(const QString& identity)
     {
-        logos::ConsumerIdentity consumer = logos::admitConsumer(identity, hostApi());
+        const QString credential = QStringLiteral("admitted-%1").arg(identity);
+        LogosAPIClient* capClient = hostApi()->getClient(QStringLiteral("capability_module"));
+        if (!capClient
+            || !capClient->informModuleToken(QString::fromLatin1(kCapToken), identity, credential))
+            return nullptr;
+        logos::ConsumerIdentity consumer = logos::adoptAdmittedConsumer(identity, credential);
         lastCredential = consumer.credential;
         return LogosQmlBridge::forConsumer(consumer);
     }
@@ -409,8 +416,8 @@ private slots:
     // — i.e. it PINNED the elevation: the isolated view holding the host's own
     // capability token, which authorizes as the host at every callee and
     // satisfies ModuleProxy::informModuleToken's trusted-channel gate. A
-    // private store is now born empty and carries only what the host minted
-    // FOR THIS IDENTITY and registered before handing over.
+    // private store is now born empty and carries only the credential the
+    // runtime admitted THIS IDENTITY with.
     void anAdmittedIdentitysStoreCarriesItsOwnCredentialAndNotTheHosts()
     {
         HostFixture fx;
@@ -576,7 +583,7 @@ private slots:
     // isolating that name would leave one client on the ambient ring and one on
     // the private store. forIdentity must return nullptr so the caller fails
     // the load rather than shipping a plugin that only looks contained.
-    void admitConsumerRefusesANameAlreadyOnTheSharedStore()
+    void adoptionRefusesANameAlreadyOnTheSharedStore()
     {
         HostFixture fx;
         // A plain LogosAPI vends the shared store under this name.
@@ -586,9 +593,9 @@ private slots:
         QCOMPARE(fx.admitBridge(QStringLiteral("view_too_late")),
                  static_cast<LogosQmlBridge*>(nullptr));
         QVERIFY(!TokenManager::isIsolated(QStringLiteral("view_too_late")));
-        // Nothing was registered either: a refusal that still told the trust
-        // root about a credential would leave a phantom caller behind.
-        QVERIFY(!fx.cap.knownCallers.contains(QStringLiteral("view_too_late")));
+        // And the shared store never received the credential it was admitted with.
+        QVERIFY(TokenManager::instance().getToken(QStringLiteral("capability_module"))
+                != QStringLiteral("admitted-view_too_late"));
     }
 
     // ── 8. Nothing changed for a caller that never opts in ─────────────────

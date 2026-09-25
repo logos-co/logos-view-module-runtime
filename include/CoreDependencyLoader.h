@@ -10,11 +10,10 @@ namespace logos::ui {
 
 // Loads a UI plugin's core dependencies off the GUI thread.
 //
-// Each logos_core_load_module spawns a subprocess and waits for its verdict
-// (~35 ms warm, ~150 ms cold), so a plugin with a handful of dependencies
-// froze the GUI thread — including the spinner raised to cover the wait.
-// Off-thread is safe by contract: logos_core.h documents core's outbound calls
-// as marshalled to the thread that called logos_core_start().
+// Each load spawns a subprocess and waits for its verdict (~35 ms warm,
+// ~150 ms cold), so a plugin with a handful of dependencies froze the GUI
+// thread — including the spinner raised to cover the wait. Loads go to
+// core_service over the host's shell binding, which is safe from any thread.
 class CoreDependencyLoader : public QObject {
     Q_OBJECT
 
