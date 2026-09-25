@@ -5,8 +5,6 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
-#include <QLocalServer>
-#include <QLocalSocket>
 #include <QPointer>
 #include <QUuid>
 #include <QDebug>
@@ -90,33 +88,6 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
         qCWarning(lcViewHost) << "ui-host binary not found at" << uiHostPath;
         return false;
     }
-
-    const QString tokenSocketName = m_socketName + QStringLiteral("_token");
-    QLocalServer::removeServer(tokenSocketName);
-    m_tokenServer = new QLocalServer(this);
-    m_tokenServer->setSocketOptions(QLocalServer::UserAccessOption);
-    if (!m_tokenServer->listen(tokenSocketName)) {
-        qCWarning(lcViewHost) << "failed to listen on token socket for"
-                   << moduleName << ":" << m_tokenServer->errorString();
-        delete m_tokenServer;
-        m_tokenServer = nullptr;
-        return false;
-    }
-
-    QPointer<QLocalServer> serverGuard(m_tokenServer);
-    const QString tokenToSend = authToken;
-    connect(m_tokenServer, &QLocalServer::newConnection, this,
-        [serverGuard, tokenToSend]() {
-            if (!serverGuard) return;
-            QLocalSocket* sock = serverGuard->nextPendingConnection();
-            if (!sock) return;
-            sock->write(tokenToSend.toUtf8());
-            sock->flush();
-            sock->waitForBytesWritten(2000);
-            sock->disconnectFromServer();
-            sock->deleteLater();
-            serverGuard->close();
-        });
 
     QProcess* process = new QProcess(this);
     m_process = process;
@@ -208,14 +179,13 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
         qCWarning(lcViewHost) << "failed to start ui-host for" << moduleName;
         m_process = nullptr;
         delete process;
-        if (m_tokenServer) {
-            m_tokenServer->close();
-            m_tokenServer->deleteLater();
-            m_tokenServer = nullptr;
-        }
         return false;
     }
 
+    // On stdin, which only this child can read: a named socket let any process
+    // of this user that connected first take the credential.
+    process->write(authToken.toUtf8() + '\n');
+    process->closeWriteChannel();
     return true;
 }
 
