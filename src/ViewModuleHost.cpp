@@ -135,7 +135,10 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
         while ((newlineIdx = m_stdoutBuffer.indexOf('\n')) != -1) {
             QByteArray line = m_stdoutBuffer.left(newlineIdx);
             m_stdoutBuffer.remove(0, newlineIdx + 1);
-            if (!m_readyEmitted && line.trimmed() == "READY") {
+            const QByteArray trimmed = line.trimmed();
+            if (!m_readyEmitted
+                && (trimmed == "READY" || trimmed.startsWith("READY "))) {
+                m_sourceName = QString::fromUtf8(trimmed.mid(6).trimmed());
                 m_readyEmitted = true;
                 qCDebug(lcViewHost) << "process ready for" << m_moduleName;
                 emit ready();
@@ -232,4 +235,9 @@ bool ViewModuleHost::isRunning() const
 QString ViewModuleHost::socketName() const
 {
     return m_socketName;
+}
+
+QString ViewModuleHost::sourceName() const
+{
+    return m_sourceName;
 }

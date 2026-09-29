@@ -1,7 +1,6 @@
 #include "LogosQmlBridge.h"
 
 #include <QLoggingCategory>
-#include "LogosViewReplicaFactory.h"
 #include "LogosIntent.h"
 #include "LogosIntentRouter.h"
 
@@ -18,8 +17,9 @@
 #include <QMetaType>
 #include <QRemoteObjectPendingCall>
 #include <QAbstractItemModelReplica>
-#include <QPluginLoader>
-#include <QFileInfo>
+#include <QRemoteObjectDynamicReplica>
+#include <QQmlContext>
+#include <QMetaEnum>
 #include <QTimer>
 #include <QPointer>
 #include <QDebug>
@@ -121,6 +121,12 @@ LogosQmlBridge::~LogosQmlBridge()
         m_intentRouter = nullptr;   // exactly once, even if the call re-enters
         router->bridgeDestroyed(this);
     }
+
+    // Here rather than as children in ~QObject, which would delete each node
+    // before its replica (see dropViewModuleCaches()).
+    const QStringList modules = m_replicaNodes.keys();
+    for (const QString& moduleName : modules)
+        dropViewModuleCaches(moduleName);
 }
 
 // ── App-to-app intents ───────────────────────────────────────────────────────
@@ -541,16 +547,18 @@ QObject* LogosQmlBridge::module(const QString& moduleName)
         return it.value();
     }
 
-    auto* factory = loadFactory(moduleName);
-    if (!factory) return nullptr;
-
     auto* node = getOrCreateNode(moduleName);
     if (!node) return nullptr;
 
-    QObject* replica = factory->acquire(node);
+    // Dynamic, never typed: a typed replica is compiled code from the module,
+    // which would have to be loaded into this process and could then never be
+    // replaced by a reinstall.
+    const QString sourceName = m_viewModuleSources.value(moduleName, moduleName);
+
+    QRemoteObjectDynamicReplica* replica = node->acquireDynamic(sourceName);
     if (!replica) {
-        qCWarning(lcQmlBridge) << "module: factory->acquire() returned null for"
-                   << moduleName;
+        qCWarning(lcQmlBridge) << "module: acquireDynamic failed for" << moduleName
+                               << "(source" << sourceName << ")";
         return nullptr;
     }
     replica->setParent(this);
@@ -558,22 +566,149 @@ QObject* LogosQmlBridge::module(const QString& moduleName)
     QQmlEngine::setObjectOwnership(replica, QQmlEngine::CppOwnership);
 
     // Forward replica readiness as a signal QML can bind to.
-    if (auto* rep = qobject_cast<QRemoteObjectReplica*>(replica)) {
-        QPointer<LogosQmlBridge> self(this);
-        QString name = moduleName;
-        QObject::connect(rep, &QRemoteObjectReplica::stateChanged, this,
-            [self, name](QRemoteObjectReplica::State newState,
-                         QRemoteObjectReplica::State /*old*/) {
-                if (!self) return;
-                const bool ready = (newState == QRemoteObjectReplica::Valid);
-                emit self->viewModuleReadyChanged(name, ready);
-            });
-        if (rep->state() == QRemoteObjectReplica::Valid) {
-            emit viewModuleReadyChanged(moduleName, true);
-        }
+    QPointer<LogosQmlBridge> self(this);
+    QObject::connect(replica, &QRemoteObjectReplica::stateChanged, this,
+        [self, moduleName, sourceName](QRemoteObjectReplica::State newState,
+                                       QRemoteObjectReplica::State /*old*/) {
+            if (!self) return;
+            const bool ready = (newState == QRemoteObjectReplica::Valid);
+            if (ready) registerEnumType(sourceName);
+            emit self->viewModuleReadyChanged(moduleName, ready);
+        });
+    if (replica->state() == QRemoteObjectReplica::Valid) {
+        registerEnumType(sourceName);
+        emit viewModuleReadyChanged(moduleName, true);
     }
 
     return replica;
+}
+
+void LogosQmlBridge::prepareViewModule(const QString& moduleName, int timeoutMs,
+                                       std::function<void(bool, const QString&)> done)
+{
+    auto finish = std::make_shared<std::function<void(bool, const QString&)>>(std::move(done));
+    auto finishLater = [this, finish](bool ok, const QString& error) {
+        QMetaObject::invokeMethod(this, [finish, ok, error]() {
+            if (!*finish) return;
+            auto callback = std::move(*finish);
+            *finish = nullptr;
+            callback(ok, error);
+        }, Qt::QueuedConnection);
+    };
+
+    module(moduleName);
+    // Never qobject_cast a dynamic replica before it is Valid: that asks for
+    // its metaobject, which does not exist yet and logs a warning.
+    QRemoteObjectReplica* replica = m_replicas.value(moduleName);
+    if (!replica) {
+        finishLater(false, QStringLiteral("could not acquire the backend of ") + moduleName);
+        return;
+    }
+    if (replica->state() == QRemoteObjectReplica::Valid) {
+        finishLater(true, QString());
+        return;
+    }
+
+    auto* timer = new QTimer(this);
+    timer->setSingleShot(true);
+    auto conn = std::make_shared<QMetaObject::Connection>();
+    *conn = connect(replica, &QRemoteObjectReplica::stateChanged, this,
+        [finishLater, timer, conn](QRemoteObjectReplica::State state,
+                                   QRemoteObjectReplica::State) {
+            if (state != QRemoteObjectReplica::Valid) return;
+            QObject::disconnect(*conn);
+            timer->deleteLater();
+            finishLater(true, QString());
+        });
+    connect(timer, &QTimer::timeout, this, [finishLater, timer, conn, moduleName, timeoutMs]() {
+        QObject::disconnect(*conn);
+        timer->deleteLater();
+        finishLater(false, QStringLiteral("the backend of %1 did not become ready within %2 ms")
+                               .arg(moduleName).arg(timeoutMs));
+    });
+    // The replica dying first (a crash drops the caches) must not leave the
+    // caller waiting for the deadline.
+    connect(replica, &QObject::destroyed, timer, [finishLater, timer, conn, moduleName]() {
+        QObject::disconnect(*conn);
+        timer->deleteLater();
+        finishLater(false, QStringLiteral("the backend of %1 went away").arg(moduleName));
+    });
+    timer->start(timeoutMs);
+}
+
+namespace {
+
+// QML type names must start upper-case; anything else (the moduleName that
+// ui-host publishes a .rep-less backend under, e.g. "counter_ui") gets no type.
+bool isQmlTypeName(const QString& name)
+{
+    if (name.isEmpty() || !name.at(0).isUpper()) return false;
+    for (const QChar c : name)
+        if (!c.isLetterOrNumber() && c != QLatin1Char('_')) return false;
+    return true;
+}
+
+} // namespace
+
+void LogosQmlBridge::registerEnumType(const QString& sourceName)
+{
+    if (!isQmlTypeName(sourceName)) return;
+
+    // Registered once and never replaced: the callback holds no module state,
+    // only the name, so a reinstalled module needs no re-registration — its
+    // next engine simply builds its instance from the new replica.
+    static QSet<QString> registered;
+    if (registered.contains(sourceName)) return;
+    registered.insert(sourceName);
+
+    const QByteArray uri = QByteArrayLiteral("Logos.") + sourceName.toUtf8();
+    const QByteArray typeName = sourceName.toUtf8();
+    qmlRegisterSingletonType(uri.constData(), 1, 0, typeName.constData(),
+        [sourceName](QQmlEngine* qmlEngine, QJSEngine* jsEngine) -> QJSValue {
+            auto* bridge = qobject_cast<LogosQmlBridge*>(
+                qmlEngine->rootContext()->contextProperty(QStringLiteral("logos"))
+                    .value<QObject*>());
+            if (!bridge) {
+                qCWarning(lcQmlBridge) << "Logos." << sourceName
+                                       << "imported by an engine with no logos bridge";
+                return jsEngine->newObject();
+            }
+            return bridge->enumsFor(sourceName, jsEngine);
+        });
+}
+
+QJSValue LogosQmlBridge::enumsFor(const QString& sourceName, QJSEngine* engine) const
+{
+    QJSValue result = engine->newObject();
+
+    const QRemoteObjectReplica* replica = nullptr;
+    for (auto it = m_replicas.cbegin(); it != m_replicas.cend(); ++it) {
+        if (it.value() && m_viewModuleSources.value(it.key(), it.key()) == sourceName) {
+            replica = it.value();
+            break;
+        }
+    }
+    if (!replica || replica->state() != QRemoteObjectReplica::Valid) {
+        // Built once per engine, so values missing now stay missing for this
+        // view — which is why hosts create the view after prepareViewModule().
+        qCWarning(lcQmlBridge) << "Logos." << sourceName
+                               << "enums read before its backend was ready; they will be undefined";
+        return result;
+    }
+
+    // Foo.Active, as the typed registration offered, and Foo.State.Active.
+    const QMetaObject* mo = replica->metaObject();
+    for (int i = mo->enumeratorOffset(); i < mo->enumeratorCount(); ++i) {
+        const QMetaEnum metaEnum = mo->enumerator(i);
+        QJSValue scoped = engine->newObject();
+        for (int k = 0; k < metaEnum.keyCount(); ++k) {
+            const QString key = QString::fromUtf8(metaEnum.key(k));
+            scoped.setProperty(key, metaEnum.value(k));
+            result.setProperty(key, metaEnum.value(k));
+        }
+        result.setProperty(QString::fromUtf8(metaEnum.enumName()), scoped);
+    }
+    return result;
 }
 
 QObject* LogosQmlBridge::model(const QString& moduleName, const QString& modelName,
@@ -612,56 +747,30 @@ bool LogosQmlBridge::isViewModuleReady(const QString& moduleName) const
 {
     auto it = m_replicas.constFind(moduleName);
     if (it == m_replicas.cend() || !it.value()) return false;
-    if (auto* rep = qobject_cast<QRemoteObjectReplica*>(it.value())) {
-        return rep->state() == QRemoteObjectReplica::Valid;
-    }
-    return false;
+    return it.value()->state() == QRemoteObjectReplica::Valid;
 }
 
 void LogosQmlBridge::replayViewModuleState()
 {
     for (auto it = m_replicas.cbegin(); it != m_replicas.cend(); ++it) {
-        auto* rep = qobject_cast<QRemoteObjectReplica*>(it.value());
-        if (rep && rep->state() == QRemoteObjectReplica::Valid)
+        if (it.value() && it.value()->state() == QRemoteObjectReplica::Valid)
             emit viewModuleReadyChanged(it.key(), true);
     }
 }
 
 void LogosQmlBridge::setViewModuleSocket(const QString& moduleName,
-                                         const QString& socketName)
+                                         const QString& socketName,
+                                         const QString& sourceName)
 {
+    const QString source = sourceName.isEmpty() ? moduleName : sourceName;
     auto currentIt = m_viewModuleSockets.constFind(moduleName);
-    if (currentIt != m_viewModuleSockets.cend() && currentIt.value() == socketName) {
+    if (currentIt != m_viewModuleSockets.cend() && currentIt.value() == socketName
+        && m_viewModuleSources.value(moduleName) == source) {
         return;
     }
     dropViewModuleCaches(moduleName);
     m_viewModuleSockets[moduleName] = socketName;
-}
-
-void LogosQmlBridge::setViewReplicaPlugin(const QString& moduleName,
-                                          const QString& pluginPath)
-{
-    auto currentIt = m_replicaPluginPaths.constFind(moduleName);
-    if (currentIt != m_replicaPluginPaths.cend() && currentIt.value() == pluginPath) {
-        return;
-    }
-    if (auto repIt = m_replicas.find(moduleName); repIt != m_replicas.end()) {
-        if (auto* r = repIt.value()) r->deleteLater();
-        m_replicas.erase(repIt);
-    }
-    if (auto facIt = m_factories.find(moduleName); facIt != m_factories.end()) {
-        m_factories.erase(facIt);
-    }
-    if (auto loaderIt = m_factoryLoaders.find(moduleName); loaderIt != m_factoryLoaders.end()) {
-        if (auto* l = loaderIt.value()) {
-            l->unload();
-            l->deleteLater();
-        }
-        m_factoryLoaders.erase(loaderIt);
-    }
-    m_replicaPluginPaths[moduleName] = pluginPath;
-
-    (void)loadFactory(moduleName);
+    m_viewModuleSources[moduleName] = source;
 }
 
 void LogosQmlBridge::notifyViewModuleCrashed(const QString& moduleName)
@@ -813,45 +922,6 @@ QRemoteObjectNode* LogosQmlBridge::getOrCreateNode(const QString& moduleName)
     return node;
 }
 
-LogosViewReplicaFactory* LogosQmlBridge::loadFactory(const QString& moduleName)
-{
-    auto it = m_factories.constFind(moduleName);
-    if (it != m_factories.cend() && it.value()) return it.value();
-
-    auto pathIt = m_replicaPluginPaths.constFind(moduleName);
-    if (pathIt == m_replicaPluginPaths.cend() || pathIt.value().isEmpty()) {
-        qCWarning(lcQmlBridge) << "no replica factory plugin registered for"
-                   << moduleName;
-        return nullptr;
-    }
-
-    const QString path = pathIt.value();
-    if (!QFileInfo::exists(path)) {
-        qCWarning(lcQmlBridge) << "replica factory plugin not found at" << path;
-        return nullptr;
-    }
-
-    auto* loader = new QPluginLoader(path, this);
-    QObject* instance = loader->instance();
-    if (!instance) {
-        qCWarning(lcQmlBridge) << "failed to load replica factory plugin"
-                   << path << ":" << loader->errorString();
-        loader->deleteLater();
-        return nullptr;
-    }
-    auto* factory = qobject_cast<LogosViewReplicaFactory*>(instance);
-    if (!factory) {
-        qCWarning(lcQmlBridge) << "plugin at" << path
-                   << "does not implement LogosViewReplicaFactory";
-        loader->unload();
-        loader->deleteLater();
-        return nullptr;
-    }
-    m_factoryLoaders[moduleName] = loader;
-    m_factories[moduleName] = factory;
-    return factory;
-}
-
 bool LogosQmlBridge::hasViewModuleSocket(const QString& moduleName) const
 {
     return m_viewModuleSockets.contains(moduleName);
@@ -862,41 +932,35 @@ QString LogosQmlBridge::viewModuleSocket(const QString& moduleName) const
     return m_viewModuleSockets.value(moduleName);
 }
 
-QString LogosQmlBridge::viewReplicaPluginPath(const QString& moduleName) const
+QString LogosQmlBridge::viewModuleSource(const QString& moduleName) const
 {
-    return m_replicaPluginPaths.value(moduleName);
+    return m_viewModuleSources.value(moduleName);
 }
 
 void LogosQmlBridge::dropViewModuleCaches(const QString& moduleName)
 {
     if (auto repIt = m_replicas.find(moduleName); repIt != m_replicas.end()) {
-        if (auto* r = repIt.value()) r->deleteLater();
+        delete repIt.value();
         m_replicas.erase(repIt);
     }
 
     const QString prefix = moduleName + QLatin1Char('/');
     for (auto mIt = m_modelReplicas.begin(); mIt != m_modelReplicas.end(); ) {
         if (mIt.key().startsWith(prefix)) {
-            if (auto* m = mIt.value()) reinterpret_cast<QObject*>(m)->deleteLater();
+            delete reinterpret_cast<QObject*>(mIt.value());
             mIt = m_modelReplicas.erase(mIt);
         } else {
             ++mIt;
         }
     }
 
-    if (auto facIt = m_factories.find(moduleName); facIt != m_factories.end()) {
-        m_factories.erase(facIt);
-    }
-    if (auto loaderIt = m_factoryLoaders.find(moduleName); loaderIt != m_factoryLoaders.end()) {
-        if (auto* l = loaderIt.value()) {
-            l->unload();
-            l->deleteLater();
-        }
-        m_factoryLoaders.erase(loaderIt);
-    }
-
+    // The node last, and now rather than deleteLater(). Deleting the node
+    // unregisters the enum types its replica registered process-wide as
+    // "<Source>::<Enum>"; a replica destroyed after that registers them again,
+    // and the next connection to the backend is then refused them — QtRO
+    // skips an enum whose name is taken — so its QML enums read undefined.
     if (auto nodeIt = m_replicaNodes.find(moduleName); nodeIt != m_replicaNodes.end()) {
-        if (auto* node = nodeIt.value()) node->deleteLater();
+        delete nodeIt.value();
         m_replicaNodes.erase(nodeIt);
     }
 }

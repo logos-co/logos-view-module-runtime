@@ -13,8 +13,8 @@
 // Intentionally NOT covered here (those belong to integration tests in
 // logos-test-modules):
 //   - Actually spawning ui-host and talking to a real view plugin.
-//   - QRemoteObjectNode acquisition / typed-replica lifecycle.
-//   - QPluginLoader loading of a real LogosViewReplicaFactory plugin.
+//   - QRemoteObjectNode acquisition / replica lifecycle
+//     (test_logos_qml_bridge_dynamic covers that against a real source).
 
 #include "LogosQmlBridge.h"
 
@@ -258,13 +258,13 @@ private slots:
         QCOMPARE(bridge.viewModuleSocket("foo"), QStringLiteral("sock-2"));
     }
 
-    void setViewReplicaPlugin_storesPath()
+    void setViewModuleSocket_sourceNameDefaultsToModuleName()
     {
         LogosQmlBridge bridge(nullptr);
-        QVERIFY(bridge.viewReplicaPluginPath("foo").isEmpty());
-        bridge.setViewReplicaPlugin("foo", "/tmp/does-not-exist.so");
-        QCOMPARE(bridge.viewReplicaPluginPath("foo"),
-                 QStringLiteral("/tmp/does-not-exist.so"));
+        bridge.setViewModuleSocket("foo", "sock-1");
+        QCOMPARE(bridge.viewModuleSource("foo"), QStringLiteral("foo"));
+        bridge.setViewModuleSocket("foo", "sock-1", "FooBackend");
+        QCOMPARE(bridge.viewModuleSource("foo"), QStringLiteral("FooBackend"));
     }
 
     void isViewModuleReady_unknownModule_false()

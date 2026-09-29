@@ -10,7 +10,7 @@
 // The unit suite can only reach the negative half of that (empty map, dropped
 // map), where the replay loop never meets a Valid replica and so cannot catch a
 // regression in the branch that matters. This one publishes a real source over
-// QtRO, acquires through the bridge's own factory-plugin path, waits for the
+// QtRO, acquires through the bridge's own module() path, waits for the
 // replica to actually reach Valid, and then pins what replay emits.
 
 #include "LogosQmlBridge.h"
@@ -67,8 +67,6 @@ private slots:
 
         LogosQmlBridge bridge(nullptr);
         bridge.setViewModuleSocket(QStringLiteral("test_view"), socket);
-        bridge.setViewReplicaPlugin(QStringLiteral("test_view"),
-                                    QStringLiteral(TEST_REPLICA_FACTORY_PLUGIN));
 
         QSignalSpy readySpy(&bridge, &LogosQmlBridge::viewModuleReadyChanged);
 
