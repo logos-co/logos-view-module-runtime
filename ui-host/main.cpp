@@ -243,12 +243,21 @@ int main(int argc, char* argv[])
 
     QRemoteObjectHost host(QUrl(QStringLiteral("local:") + socketName));
 
+    // The name the backend is published under is chosen inside the plugin
+    // (typed enableRemoting uses the .rep class name), and the parent needs it
+    // to acquire the replica. Record the first source added; models are
+    // remoted after this point and so never win.
+    QString sourceName;
+    QObject::connect(&host, &QRemoteObjectNode::remoteObjectAdded, &host,
+        [&sourceName](const QRemoteObjectSourceLocation& location) {
+            if (sourceName.isEmpty())
+                sourceName = location.first;
+        });
+
     // Prefer typed remoting via the LogosViewPlugin interface. The generated
     // <Foo>ViewPluginBase (from logos_module(REP_FILE ...)) performs
-    // host->enableRemoting<FooSourceAPI>(backend), which publishes the typed
-    // source signature so typed replicas on the client side reach the Valid
-    // state. Without this, dynamic (name-based) remoting would use a
-    // different signature hash and typed replicas would stall in Default.
+    // host->enableRemoting<FooSourceAPI>(backend), which publishes the .rep's
+    // class name and schema; the parent reads both from the wire.
     auto* viewPlugin = qobject_cast<LogosViewPlugin*>(pluginObject);
     if (!viewPlugin) {
         viewPlugin = dynamic_cast<LogosViewPlugin*>(pluginObject);
@@ -299,8 +308,9 @@ int main(int argc, char* argv[])
                  << "as" << childName << "with roles" << roles;
     }
 
+    // "READY <source name>" — ViewModuleHost::sourceName() on the parent side.
     QTextStream out(stdout);
-    out << "READY" << Qt::endl;
+    out << "READY " << sourceName << Qt::endl;
     out.flush();
 
     const int rc = app.exec();

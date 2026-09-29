@@ -1,0 +1,6 @@
+class TestRepBackend
+{
+    ENUM State { Idle=0, Busy=1, Done=2 }
+    PROP(State state=Done READONLY)
+    PROP(QString label READWRITE)
+}

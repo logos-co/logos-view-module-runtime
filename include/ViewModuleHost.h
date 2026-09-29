@@ -17,6 +17,7 @@ public:
     void stop();
     bool isRunning() const;
     QString socketName() const;
+    QString sourceName() const;
 
 signals:
     void processExited(int exitCode);
@@ -27,6 +28,7 @@ private:
     QLocalServer* m_tokenServer = nullptr;
     QString m_moduleName;
     QString m_socketName;
+    QString m_sourceName;
     QByteArray m_stdoutBuffer;
     bool m_readyEmitted = false;
 #ifdef Q_OS_WIN

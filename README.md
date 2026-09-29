@@ -15,8 +15,12 @@ future Logos host application can link the same library and use the same
     `callModule` / `callModuleAsync` to **backend** modules via `LogosAPI`
     (IPC); results are serialized to JSON strings so QML always sees a string.
     **View** modules are reached through `logos.module(name)` /
-    `logos.model(name)`, which hand back a typed replica built by that module's
-    `LogosViewReplicaFactory` plugin. Calling `callModule` on a view module is
+    `logos.model(name)`, which hand back a dynamic replica built from the
+    schema the backend sends — no code from the module is loaded into the
+    host, so a reinstalled module is picked up by its next open. `.rep` enums
+    are served as a `Logos.<RepClass>` singleton read from that replica.
+    Hosts call `prepareViewModule(name, timeoutMs, done)` and create the view
+    only once it reports ready. Calling `callModule` on a view module is
     refused with an error payload, not routed.
   - `LogosIntent.h` — the **frozen** app-to-app intent vocabulary: the six
     error codes, the intent-name grammar, the payload rules and the result
@@ -25,8 +29,9 @@ future Logos host application can link the same library and use the same
     an error code means. See "App-to-app intents" below.
   - `ViewModuleHost` — spawns a `ui-host` child process for a given view
     module plugin, generates a unique local socket name, watches stdout for
-    `READY`, and emits `ready()`. The parent then points `LogosQmlBridge` at
-    that socket via `setViewModuleSocket(name, socket)`.
+    `READY <source name>`, and emits `ready()`. The parent then points
+    `LogosQmlBridge` at that socket via
+    `setViewModuleSocket(name, socket(), sourceName())`.
 
 - **`ui-host`** — standalone executable. Loads a single Qt plugin
   (`--path <plugin.so>`), calls `initLogos(LogosAPI*)` on it via reflection
@@ -38,18 +43,19 @@ future Logos host application can link the same library and use the same
     succeeds, `ui-host` calls
     `viewPlugin->enableRemoting(&host)`. The generated
     `<Foo>ViewPluginBase` (produced by `logos_module(REP_FILE …)` in
-    `logos-plugin-qt`) invokes `host->enableRemoting<FooSourceAPI>(backend)`
-    so typed replicas on the client side reach the `Valid` state. The
-    remoted object is `viewPlugin->viewObject()`.
+    `logos-plugin-qt`) invokes `host->enableRemoting<FooSourceAPI>(backend)`,
+    publishing it under the `.rep` class name. The remoted object is
+    `viewPlugin->viewObject()`.
   - **Dynamic remoting (fallback)**: for plugins without a `.rep` /
     `LogosViewPlugin` implementation, `ui-host` falls back to
     `host.enableRemoting(pluginObject, moduleName)`, which propagates all
-    `Q_INVOKABLE`s, slots, signals, and `Q_PROPERTY`s (with `NOTIFY`) via a
-    `QRemoteObjectDynamicReplica` on the client side.
+    `Q_INVOKABLE`s, slots, signals, and `Q_PROPERTY`s (with `NOTIFY`).
 
   Any `Q_PROPERTY` on the remoted object whose value is a
   `QAbstractItemModel*` is additionally remoted as a child source named
-  `<moduleName>/<propertyName>`. Prints `READY` once it's listening.
+  `<moduleName>/<propertyName>`. Prints `READY <source name>` once it's
+  listening — the name the backend was published under, which the parent
+  needs to acquire it.
 
 ## View object convention
 
@@ -77,7 +83,7 @@ private:
 `ui-host` calls `viewPlugin->enableRemoting(&host)`, which internally does
 `host->enableRemoting<MySourceAPI>(m_backend)` using the typed source
 generated from the `.rep` file. QML on the parent side talks to
-`MyBackend` via a typed replica.
+`MyBackend` via a dynamic replica.
 
 For plugins without a `.rep` file (no `LogosViewPlugin` implementation),
 `ui-host` falls back to dynamic remoting of the plugin object itself — this
@@ -190,7 +196,7 @@ From QML:
 ```qml
 import QtQuick
 Item {
-    // A view module is a typed replica, not a JSON call. Properties, slots and
+    // A view module is a replica, not a JSON call. Properties, slots and
     // signals are reached directly; `callModule` on this name is refused.
     property var backend: logos.module("my_view_module")
 

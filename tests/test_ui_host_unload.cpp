@@ -33,6 +33,7 @@ struct Run {
     int exitCode = -1;
     qint64 stopMs = -1;       // wall clock across ViewModuleHost::stop()
     bool exited = false;
+    QString sourceName;       // what ui-host announced with READY
 
     int count(const QString& entry) const { return journal.count(entry); }
     bool has(const QString& entry) const { return journal.contains(entry); }
@@ -76,6 +77,8 @@ private:
             host.stop();
             return r;
         }
+
+        r.sourceName = host.sourceName();
 
         QElapsedTimer t;
         t.start();
@@ -131,6 +134,10 @@ private slots:
                  "no hook was declared, so nothing should have run an event "
                  "loop after exec() returned");
         QCOMPARE(r.journal, QStringList{QStringLiteral("dtor")});
+
+        // No .rep, so ui-host remotes the plugin itself under the module name,
+        // and READY has to say so: the parent acquires the replica by it.
+        QCOMPARE(r.sourceName, QStringLiteral("unload_fixture"));
     }
 
     // ---------------------------------------------------------------------
