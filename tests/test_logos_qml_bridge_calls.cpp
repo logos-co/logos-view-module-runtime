@@ -49,10 +49,18 @@
 #include <QThread>
 #include <QTimer>
 #include <QVariantList>
+#include <QVariantMap>
 
 #include <memory>
 
 namespace {
+
+QVariantMap refusal(const QString& code, const QString& message)
+{
+    return {{QStringLiteral("code"), code},
+            {QStringLiteral("message"), message},
+            {QStringLiteral("origin"), QStringLiteral("echo_module")}};
+}
 
 class EchoProvider : public LogosProviderObject {
 public:
@@ -66,7 +74,16 @@ public:
         callCount.fetchAndAddRelaxed(1);
         if (sleepMs > 0) QThread::msleep(static_cast<unsigned long>(sleepMs));
         if (method == QLatin1String("echo") && !args.isEmpty()) return args.first();
-        return QVariant();
+        if (method == QLatin1String("badArgs"))
+            return refusal(QStringLiteral("invalid_args"), QStringLiteral("expected 1 arguments, got 0"));
+        if (method == QLatin1String("lookalike")) {
+            QVariantMap data = refusal(QStringLiteral("unknown_method"), QStringLiteral("data"));
+            data.insert(QStringLiteral("extra"), 1);
+            return data;
+        }
+        // A current provider refuses an unknown name rather than answering empty.
+        return refusal(QStringLiteral("unknown_method"),
+                       QStringLiteral("unknown method '%1'").arg(method));
     }
     bool informModuleToken(const QString&, const QString&) override { return true; }
     QJsonArray getMethods() override { return QJsonArray{}; }
@@ -124,6 +141,12 @@ private:
             engine.evaluate(QStringLiteral(
                 "logos.callModuleAsync(\"%1\", \"echo\", [7], "
                 "function (p) { __payload = p; }, %2);").arg(module).arg(timeoutMs));
+        }
+        void callMethod(const QString& module, const QString& method, int timeoutMs)
+        {
+            engine.evaluate(QStringLiteral(
+                "logos.callModuleAsync(\"%1\", \"%2\", [], "
+                "function (p) { __payload = p; }, %3);").arg(module, method).arg(timeoutMs));
         }
         bool fired() { return !engine.evaluate(QStringLiteral("__payload")).isNull(); }
         QString payload() { return engine.evaluate(QStringLiteral("__payload")).toString(); }
@@ -405,6 +428,54 @@ private slots:
                  qPrintable(QStringLiteral("a reachable module taking 2500 ms was cut off by "
                                            "the startup budget: %1").arg(payload)));
         QCOMPARE(payload.trimmed(), QStringLiteral("7"));
+    }
+
+    // ── A PROVIDER'S REFUSAL ────────────────────────────────────────────────
+    // It arrives as a RESULT. QML must get an error payload, not a value: an
+    // unknown name used to be an empty reply, which read as "Invalid response".
+    void syncCall_providerRefusal_isAnErrorPayload()
+    {
+        const QString mod = QStringLiteral("call_refusal_module");
+        LogosModeConfig::setMode(LogosMode::Remote);
+        Publisher pub(mod);
+
+        LogosAPI api(QStringLiteral("caller"));
+        api.getTokenManager()->saveToken(mod, QStringLiteral("tok"));
+        LogosQmlBridge bridge(&api);
+
+        const QJsonObject unknown = asObject(bridge.callModule(mod, QStringLiteral("nope"), {}));
+        QCOMPARE(unknown.value(QStringLiteral("error")).toString(), QStringLiteral("Method not found"));
+        QCOMPARE(unknown.value(QStringLiteral("message")).toString(), QStringLiteral("unknown method 'nope'"));
+        QCOMPARE(unknown.value(QStringLiteral("method")).toString(), QStringLiteral("nope"));
+
+        const QJsonObject refused = asObject(bridge.callModule(mod, QStringLiteral("badArgs"), {}));
+        QCOMPARE(refused.value(QStringLiteral("error")).toString(), QStringLiteral("Call refused"));
+        QCOMPARE(refused.value(QStringLiteral("message")).toString(),
+                 QStringLiteral("expected 1 arguments, got 0"));
+
+        // Four keys is the method's own data, however much it looks like a refusal.
+        const QJsonObject data = asObject(bridge.callModule(mod, QStringLiteral("lookalike"), {}));
+        QVERIFY(!data.contains(QStringLiteral("error")));
+        QCOMPARE(data.value(QStringLiteral("code")).toString(), QStringLiteral("unknown_method"));
+    }
+
+    void asyncCall_providerRefusal_isAnErrorPayload()
+    {
+        const QString mod = QStringLiteral("acall_refusal_module");
+        LogosModeConfig::setMode(LogosMode::Remote);
+        Publisher pub(mod);
+
+        LogosAPI api(QStringLiteral("caller"));
+        api.getTokenManager()->saveToken(mod, QStringLiteral("tok"));
+        LogosQmlBridge bridge(&api);
+
+        AsyncRun run;
+        run.arm(&bridge);
+        run.callMethod(mod, QStringLiteral("nope"), 5000);
+        QVERIFY2(run.waitFired(5000), "callModuleAsync never answered");
+        const QJsonObject p = asObject(run.payload());
+        QCOMPARE(p.value(QStringLiteral("error")).toString(), QStringLiteral("Method not found"));
+        QCOMPARE(p.value(QStringLiteral("message")).toString(), QStringLiteral("unknown method 'nope'"));
     }
 
     // The whole point of the async form is that it does not block. Issuing one
