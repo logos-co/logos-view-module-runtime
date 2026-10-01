@@ -68,6 +68,33 @@ QString makeErrorPayload(const QString& error,
     return QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact));
 }
 
+// A provider that refused the call answers {code, message, origin} as its RESULT;
+// fold the closed code set every other consumer folds into an error payload.
+bool refusalPayload(const QVariant& result, const QString& module, const QString& method,
+                    QString* payload)
+{
+    QVariantMap m;
+    if (result.userType() == QMetaType::QVariantMap) m = result.toMap();
+    else if (result.userType() == QMetaType::QJsonObject) m = result.toJsonObject().toVariantMap();
+    else return false;
+    if (m.size() != 3) return false;
+    const QVariant code = m.value(QStringLiteral("code"));
+    const QVariant message = m.value(QStringLiteral("message"));
+    const QVariant origin = m.value(QStringLiteral("origin"));
+    if (code.userType() != QMetaType::QString || message.userType() != QMetaType::QString
+        || origin.userType() != QMetaType::QString)
+        return false;
+    const QString c = code.toString();
+    if (c != QLatin1String("unknown_method") && c != QLatin1String("invalid_args")
+        && c != QLatin1String("dispatch_failed"))
+        return false;
+    *payload = makeErrorPayload(c == QLatin1String("unknown_method")
+                                    ? QStringLiteral("Method not found")
+                                    : QStringLiteral("Call refused"),
+                                module, method, message.toString());
+    return true;
+}
+
 } // namespace
 
 LogosQmlBridge::LogosQmlBridge(LogosAPI* api, QObject* parent)
@@ -365,6 +392,8 @@ QString LogosQmlBridge::callModule(const QString& module,
         return makeErrorPayload(QStringLiteral("Invalid response"), module, method);
     }
 
+    QString refused;
+    if (refusalPayload(result, module, method, &refused)) return refused;
     return LogosQmlBridge::serializeResultForTesting(result);
 }
 
@@ -425,6 +454,11 @@ void LogosQmlBridge::callModuleAsync(const QString& module,
                 if (!result.isValid()) {
                     invokeCallback(makeErrorPayload(
                         QStringLiteral("Invalid response"), module, method));
+                    return;
+                }
+                QString refused;
+                if (refusalPayload(result, module, method, &refused)) {
+                    invokeCallback(refused);
                     return;
                 }
                 invokeCallback(LogosQmlBridge::serializeResultForTesting(result));
