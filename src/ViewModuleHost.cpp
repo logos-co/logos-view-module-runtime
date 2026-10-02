@@ -19,6 +19,36 @@
 // with QT_LOGGING_RULES="logos.viewhost.debug=true" when a child misbehaves.
 Q_LOGGING_CATEGORY(lcViewHost, "logos.viewhost", QtWarningMsg)
 
+#ifdef Q_OS_WIN
+namespace {
+// Kill-on-close job, as logos-container-subprocess uses for logos_host: when this
+// process dies, crash included, the job's last handle closes and every ui-host dies.
+HANDLE uiHostJob()
+{
+    static HANDLE job = []() -> HANDLE {
+        HANDLE h = ::CreateJobObjectW(nullptr, nullptr);
+        if (h == nullptr) {
+            const DWORD err = ::GetLastError();
+            qCWarning(lcViewHost) << "CreateJobObject failed:" << err
+                                  << "- orphaned ui-host processes will not be reaped"
+                                     " if this process dies abruptly";
+            return nullptr;
+        }
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION li{};
+        li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!::SetInformationJobObject(h, JobObjectExtendedLimitInformation,
+                                       &li, sizeof(li))) {
+            const DWORD err = ::GetLastError();
+            qCWarning(lcViewHost) << "SetInformationJobObject failed:" << err
+                                  << "- continuing without kill-on-close";
+        }
+        return h;
+    }();
+    return job;
+}
+} // namespace
+#endif
+
 ViewModuleHost::ViewModuleHost(QObject* parent)
     : QObject(parent)
 {
@@ -105,11 +135,26 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
             // console to share) gets one console WINDOW per view module. Its
             // stdout/stderr are already on QProcess pipes.
             args->flags |= CREATE_NO_WINDOW;
+            // Suspended until started() has put it in the job, so nothing it spawns escapes.
+            args->flags |= CREATE_SUSPENDED;
         });
     connect(process, &QProcess::started, this, [this]() {
-        m_mainThreadId = m_procInfo
-            ? static_cast<PROCESS_INFORMATION*>(m_procInfo)->dwThreadId : 0;
+        const auto* pi = static_cast<PROCESS_INFORMATION*>(m_procInfo);
         m_procInfo = nullptr;  // QProcess owns and frees it; never hold it
+        m_mainThreadId = pi ? pi->dwThreadId : 0;
+        if (pi) {
+            if (HANDLE job = uiHostJob(); job && !::AssignProcessToJobObject(job, pi->hProcess)) {
+                const DWORD err = ::GetLastError();
+                qCWarning(lcViewHost) << "AssignProcessToJobObject failed:" << err
+                                      << "for" << m_moduleName;
+            }
+            // Undo CREATE_SUSPENDED; if this fails the child never runs.
+            if (::ResumeThread(pi->hThread) == static_cast<DWORD>(-1)) {
+                const DWORD err = ::GetLastError();
+                qCCritical(lcViewHost) << "ResumeThread failed:" << err
+                                       << "- ui-host for" << m_moduleName << "will not start";
+            }
+        }
         if (m_mainThreadId == 0) {
             qCWarning(lcViewHost) << "no main thread id for" << m_moduleName
                        << "- shutdown will fall back to kill()";
