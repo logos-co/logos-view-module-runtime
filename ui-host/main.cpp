@@ -10,7 +10,7 @@
 
 #include <QCoreApplication>
 #include <QCommandLineParser>
-#include <QLocalSocket>
+#include <QFile>
 #include <QFileInfo>
 #include <QPluginLoader>
 #include <QRemoteObjectHost>
@@ -170,23 +170,12 @@ int main(int argc, char* argv[])
     const QString pluginPath = parser.value(pathOpt);
     const QString socketName = parser.value(socketOpt);
 
-    // Receive the per-spawn auth token from the parent (ViewModuleHost)
+    // The per-spawn credential arrives on stdin (ViewModuleHost::spawn).
     QString authToken;
     {
-        QLocalSocket client;
-        client.connectToServer(socketName + QStringLiteral("_token"));
-        if (!client.waitForConnected(10000)) {
-            qCritical() << "ui-host: failed to connect to parent token socket for"
-                        << moduleName << ":" << client.errorString();
-            return 1;
-        }
-        if (!client.waitForReadyRead(5000)) {
-            qCritical() << "ui-host: timeout waiting for auth token from parent for"
-                        << moduleName;
-            return 1;
-        }
-        authToken = QString::fromUtf8(client.readAll());
-        client.disconnectFromServer();
+        QFile input;
+        if (input.open(stdin, QIODevice::ReadOnly))
+            authToken = QString::fromUtf8(input.readLine()).trimmed();
     }
     if (authToken.isEmpty()) {
         qCritical() << "ui-host: parent sent empty auth token for" << moduleName;
@@ -210,11 +199,9 @@ int main(int argc, char* argv[])
     LogosAPI* logosAPI = new LogosAPI(moduleName);
     logosAPI->setParent(&app);
 
-    // Adopt the per-spawn credential the PARENT minted and already registered
-    // with capability_module (basecamp's PluginLoader / standalone's MainWindow,
-    // both through logos::admitConsumer). This process only installs it — no
-    // isolation and no second registration, which would invalidate the very
-    // credential the parent is still holding.
+    // Adopt the credential capability_module already holds for this plugin (the
+    // runtime admitted it, or the parent registered it). This process only
+    // installs it: a second admission would revoke the one the parent holds.
     //
     // Was two saveToken() calls spelling "core" and "capability_module" by hand.
     // Those keys are TokenManager::bootstrapKeys(), and this was the fifth place

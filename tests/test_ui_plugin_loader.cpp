@@ -1,5 +1,6 @@
 // UiPluginLoader's paths that end before a plugin is admitted: dependency
-// loading, and plugins that cannot be found. No LogosAPI is needed for these.
+// loading, and plugins that cannot be found. No LogosAPI is needed for these,
+// nor for admission by the runtime, which only adopts.
 
 #include <QtTest/QtTest>
 
@@ -9,6 +10,10 @@
 #include <QThread>
 
 #include "UiPluginLoader.h"
+#include "token_manager.h"
+
+#include <QFile>
+#include <QTemporaryDir>
 
 using logos::ui::UiPluginKind;
 using logos::ui::UiPluginLoader;
@@ -141,6 +146,42 @@ private slots:
         QTRY_COMPARE(failed.count(), 1);
         QCOMPARE(loaded.count(), 0);
         QVERIFY(!loader.isLoading("legacy"));
+    }
+
+    void aPluginTheRuntimeAdmitsIsAdoptedAndARefusalFailsIt()
+    {
+        QTemporaryDir dir;
+        const QString qml = dir.filePath(QStringLiteral("Main.qml"));
+        QFile file(qml);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("import QtQuick\nItem {}\n");
+        file.close();
+
+        Recorder recorder;
+        UiPluginLoader loader(nullptr, recorder.bind());
+        QStringList asked;
+        loader.setAdmitConsumer([&](const QString& name) {
+            asked << name;
+            return name == QStringLiteral("admitted_view") ? QStringLiteral("cred-admitted")
+                                                           : QString();
+        });
+        QSignalSpy failed(&loader, &UiPluginLoader::pluginLoadFailed);
+
+        UiPluginRequest refused = qmlRequest("refused_view");
+        refused.qmlViewPath = qml;
+        loader.load(refused);
+        QTRY_COMPARE(failed.count(), 1);
+        QVERIFY(failed.at(0).at(1).toString().contains("isolated identity"));
+
+        UiPluginRequest admitted = qmlRequest("admitted_view");
+        admitted.qmlViewPath = qml;
+        loader.load(admitted);
+        QTRY_VERIFY(TokenManager::isIsolated(QStringLiteral("admitted_view")));
+        QCOMPARE(TokenManager::forIdentity(QStringLiteral("admitted_view"))
+                     .getToken(QStringLiteral("capability_module")),
+                 QStringLiteral("cred-admitted"));
+        QCOMPARE(asked, (QStringList{QStringLiteral("refused_view"),
+                                     QStringLiteral("admitted_view")}));
     }
 };
 

@@ -4,8 +4,6 @@
 #include <QProcess>
 #include <QString>
 
-class QLocalServer;
-
 class ViewModuleHost : public QObject {
     Q_OBJECT
 public:
@@ -25,7 +23,6 @@ signals:
 
 private:
     QProcess* m_process = nullptr;
-    QLocalServer* m_tokenServer = nullptr;
     QString m_moduleName;
     QString m_socketName;
     QString m_sourceName;

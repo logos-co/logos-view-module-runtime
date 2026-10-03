@@ -55,6 +55,9 @@ public:
     using LoadDependency = std::function<bool(const QString& name, bool required)>;
     // Runs before the view's QML does, e.g. to attach the bridge to intents.
     using BridgeSetup = std::function<void(const QString& name, LogosQmlBridge* bridge)>;
+    // A plugin's credential, admitted by the runtime (QtLogosCore::admitConsumer);
+    // empty when refused.
+    using AdmitConsumer = std::function<QString(const QString& name)>;
 
     // `hostApi` is the host's trusted identity; plugins never get it.
     UiPluginLoader(LogosAPI* hostApi, LoadDependency loadDependency,
@@ -62,6 +65,9 @@ public:
     ~UiPluginLoader() override;
 
     void setBridgeSetup(BridgeSetup setup) { m_bridgeSetup = std::move(setup); }
+    // Once capability_module is the token authority, the runtime admits each
+    // plugin and this only adopts it; without it, plugins are admitted on hostApi.
+    void setAdmitConsumer(AdmitConsumer admit) { m_admitConsumer = std::move(admit); }
     // Also accept legacy plugins that only expose an invokable createWidget().
     void setAcceptInvokableWidgetFactories(bool accept) { m_acceptInvokable = accept; }
 
@@ -103,6 +109,7 @@ private:
     LogosAPI* m_hostApi;
     LoadDependency m_loadDependency;
     BridgeSetup m_bridgeSetup;
+    AdmitConsumer m_admitConsumer;
     bool m_acceptInvokable = false;
     CoreDependencyLoader* m_dependencyLoader;
     QHash<QString, logos::ConsumerIdentity> m_consumers;
