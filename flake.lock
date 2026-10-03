@@ -16,16 +16,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1791031671,
-        "narHash": "sha256-Xo0rflYyM3NmLLF2xjfwrD+QS+0Imiab62WzEP9HzIw=",
+        "lastModified": 1791037147,
+        "narHash": "sha256-mEypfDhuX0Vj6c7oP93zYLdZZYN2VfEzVBsyoiVB0J0=",
         "owner": "logos-co",
         "repo": "logos-cpp-sdk",
-        "rev": "0dc0adcc641de1444c75550768c9c7ebcdc31874",
+        "rev": "314a0a8937714bd629750117efcde9423911ecaa",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
-        "ref": "feat/drop-legacy-mode",
+        "ref": "feat/method-scopes",
         "repo": "logos-cpp-sdk",
         "type": "github"
       }
@@ -161,16 +161,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1791031679,
-        "narHash": "sha256-hbjKJm3Pxp/oMaij/D9cNqadh0eTvZ7249qLBMDrP1w=",
+        "lastModified": 1791037165,
+        "narHash": "sha256-HutpuhjoTz22LqwQxF683VWJRWZz9qfCwi3jdFu3XSs=",
         "owner": "logos-co",
         "repo": "logos-plugin-qt",
-        "rev": "a6d3123e94885111996bb1b7425d30d6ab509966",
+        "rev": "c6c106ba4005f0c804b440a305b072952e4533ae",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
-        "ref": "feat/drop-legacy-mode",
+        "ref": "feat/method-scopes",
         "repo": "logos-plugin-qt",
         "type": "github"
       }
@@ -185,16 +185,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1791031464,
-        "narHash": "sha256-c1/5v39SJwqT2gAEGtEqXZ9B/TRVcow9gJ+zBph28w8=",
+        "lastModified": 1791036569,
+        "narHash": "sha256-+BlOSGnSOQf+Y3R0cwbZmr1B0xjPFdz/sEzrFTFGijM=",
         "owner": "logos-co",
         "repo": "logos-protocol",
-        "rev": "9076d2b8bb4036ceac9bd38de428434449496b55",
+        "rev": "8fd265985b4a30ba859a262fdd1e772a517d316c",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
-        "ref": "feat/drop-legacy-mode",
+        "ref": "feat/method-scopes",
         "repo": "logos-protocol",
         "type": "github"
       }
