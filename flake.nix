@@ -11,7 +11,7 @@
     # Runtime-control wave (protocol 0.13, plugin-qt#48, cpp-sdk#169): the
     # runtime admits UI plugins and this adopts them. Back to master as they merge.
     logos-cpp-sdk = {
-      url = "github:logos-co/logos-cpp-sdk/feat/core-service-client";
+      url = "github:logos-co/logos-cpp-sdk/feat/drop-legacy-mode";
       inputs.logos-nix.follows = "logos-nix";
       inputs.logos-protocol.follows = "logos-protocol";
     };
@@ -31,7 +31,7 @@
     # so c8bab12 is not an ancestor of master even though every line of it is
     # in master — verify by files, not by `git merge-base --is-ancestor`.
     logos-protocol = {
-      url = "github:logos-co/logos-protocol/feat/plain-local-inproc";
+      url = "github:logos-co/logos-protocol/feat/drop-legacy-mode";
       inputs.logos-nix.follows = "logos-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
@@ -71,7 +71,7 @@
     # for cpp/logos_plugin_unload.h -- the shared host-side teardown helper
     # ui-host calls below; that has merged (ef11c21).
     logos-plugin-qt = {
-      url = "github:logos-co/logos-plugin-qt/feat/consumer-adoption-only";
+      url = "github:logos-co/logos-plugin-qt/feat/drop-legacy-mode";
       inputs.logos-nix.follows = "logos-nix";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.logos-protocol.follows = "logos-protocol";

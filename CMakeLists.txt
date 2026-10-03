@@ -74,7 +74,6 @@ add_library(logos_view_module_runtime STATIC
     include/IComponent.h
     include/QmlLiveView.h
     include/QmlSandbox.h
-    include/QtCoreTokens.h
     include/UiPluginLoader.h
     include/UiPluginPackage.h
     src/host/CoreDependencyLoader.cpp
@@ -83,7 +82,6 @@ add_library(logos_view_module_runtime STATIC
     src/host/DenyAllReply.cpp
     src/host/QmlLiveView.cpp
     src/host/QmlSandbox.cpp
-    src/host/QtCoreTokens.cpp
     src/host/RestrictedUrlInterceptor.cpp
     src/host/SandboxLogging.cpp
     src/host/UiPluginLoader.cpp

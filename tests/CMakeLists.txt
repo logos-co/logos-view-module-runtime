@@ -308,7 +308,6 @@ add_test(NAME UiHostUnloadTests COMMAND test_ui_host_unload)
 foreach(host_test
     test_ui_plugin_package
     test_ui_plugin_loader
-    test_qt_core_tokens
     dependency_entry_test
     core_dependency_loader_test)
   add_executable(${host_test} ${host_test}.cpp)

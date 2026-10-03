@@ -11,7 +11,7 @@
 #include <QStringList>
 #include <QPair>
 
-// logos::ConsumerIdentity — what a host gets back from logos::admitConsumer.
+// logos::ConsumerIdentity — what a host gets back from logos::adoptAdmittedConsumer.
 // By value in the signature below rather than forward-declared, because a
 // caller has to be able to construct one to call it.
 #include "logos_consumer.h"
@@ -120,13 +120,10 @@ public:
      *
      * TAKES A ConsumerIdentity RATHER THAN A NAME, and that is the whole
      * change. The predecessor of this function took a name and called
-     * LogosAPI::forIdentity, which is only HALF an identity: an isolated store,
-     * a credential nobody minted, and no registration at capability_module. Its
-     * own documentation admitted the gap ("the host still has to make
-     * `identity` a known caller"), and leaving that to the caller is exactly
-     * how two hosts ended up doing it differently and one of them not at all.
-     * logos::admitConsumer does all of it, in the one order that has no window
-     * in it, and hands back the object this takes.
+     * LogosAPI::forIdentity, which is only HALF an identity: an isolated store
+     * with no credential. logos::adoptAdmittedConsumer installs the credential
+     * the runtime admitted the identity with, and hands back the object this
+     * takes.
      *
      * Returns NULLPTR for a falsy ConsumerIdentity; that is fatal for the view
      * and must not be softened into "use the host's bridge instead".

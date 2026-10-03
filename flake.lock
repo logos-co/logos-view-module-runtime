@@ -16,16 +16,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1791031623,
-        "narHash": "sha256-RlnsSyKZfM0JcxOMzdfFD6elpbAAAzjjTLw4KaSC4nE=",
+        "lastModified": 1791031671,
+        "narHash": "sha256-Xo0rflYyM3NmLLF2xjfwrD+QS+0Imiab62WzEP9HzIw=",
         "owner": "logos-co",
         "repo": "logos-cpp-sdk",
-        "rev": "18c224c3771d7ffaf6a56d22ca7c0ecf07d4de93",
+        "rev": "0dc0adcc641de1444c75550768c9c7ebcdc31874",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
-        "ref": "feat/core-service-client",
+        "ref": "feat/drop-legacy-mode",
         "repo": "logos-cpp-sdk",
         "type": "github"
       }
@@ -161,16 +161,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1791031641,
-        "narHash": "sha256-ipLWTOyG2Hy8O7tjHpXrI1YybmvKe/277WZvZ802Cq8=",
+        "lastModified": 1791031679,
+        "narHash": "sha256-hbjKJm3Pxp/oMaij/D9cNqadh0eTvZ7249qLBMDrP1w=",
         "owner": "logos-co",
         "repo": "logos-plugin-qt",
-        "rev": "47d9b4376cdf014566efdb7529400114d9c83d3e",
+        "rev": "a6d3123e94885111996bb1b7425d30d6ab509966",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
-        "ref": "feat/consumer-adoption-only",
+        "ref": "feat/drop-legacy-mode",
         "repo": "logos-plugin-qt",
         "type": "github"
       }
@@ -185,16 +185,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1791031462,
-        "narHash": "sha256-P2qfcTT6SGkmhcdFNAdJ1ubRVk+0hXUHggjkfEL8/zw=",
+        "lastModified": 1791031464,
+        "narHash": "sha256-c1/5v39SJwqT2gAEGtEqXZ9B/TRVcow9gJ+zBph28w8=",
         "owner": "logos-co",
         "repo": "logos-protocol",
-        "rev": "d9598fa831781e26cc2430c48bc7585722b90699",
+        "rev": "9076d2b8bb4036ceac9bd38de428434449496b55",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
-        "ref": "feat/plain-local-inproc",
+        "ref": "feat/drop-legacy-mode",
         "repo": "logos-protocol",
         "type": "github"
       }

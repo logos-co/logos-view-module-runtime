@@ -1,6 +1,6 @@
-// UiPluginLoader's paths that end before a plugin is admitted: dependency
-// loading, and plugins that cannot be found. No LogosAPI is needed for these,
-// nor for admission by the runtime, which only adopts.
+// UiPluginLoader's paths that end before a plugin is admitted — dependency
+// loading, and plugins that cannot be found — and admission by the runtime,
+// which this only adopts.
 
 #include <QtTest/QtTest>
 
@@ -42,6 +42,12 @@ struct Recorder {
     }
 };
 
+// For the paths that end before a plugin is admitted.
+UiPluginLoader::AdmitConsumer admitNothing()
+{
+    return [](const QString&) { return QString(); };
+}
+
 UiPluginRequest qmlRequest(const QString& name)
 {
     UiPluginRequest request;
@@ -61,7 +67,7 @@ private slots:
     {
         Recorder recorder;
         recorder.failing = {"dep_a"};
-        UiPluginLoader loader(nullptr, recorder.bind());
+        UiPluginLoader loader(recorder.bind(), admitNothing());
         QSignalSpy failed(&loader, &UiPluginLoader::pluginLoadFailed);
 
         UiPluginRequest request = qmlRequest("p1");
@@ -81,7 +87,7 @@ private slots:
     void anUnrecognisedDependencyEntryFailsBeforeLoadingAny()
     {
         Recorder recorder;
-        UiPluginLoader loader(nullptr, recorder.bind());
+        UiPluginLoader loader(recorder.bind(), admitNothing());
         QSignalSpy failed(&loader, &UiPluginLoader::pluginLoadFailed);
 
         UiPluginRequest request = qmlRequest("p2");
@@ -97,7 +103,7 @@ private slots:
     {
         Recorder recorder;
         recorder.failing = {"opt_a"};
-        UiPluginLoader loader(nullptr, recorder.bind());
+        UiPluginLoader loader(recorder.bind(), admitNothing());
         QSignalSpy failed(&loader, &UiPluginLoader::pluginLoadFailed);
 
         UiPluginRequest request = qmlRequest("p3");
@@ -118,7 +124,7 @@ private slots:
     void aSecondLoadWhileLoadingIsIgnored()
     {
         Recorder recorder;
-        UiPluginLoader loader(nullptr, recorder.bind());
+        UiPluginLoader loader(recorder.bind(), admitNothing());
         QSignalSpy failed(&loader, &UiPluginLoader::pluginLoadFailed);
 
         loader.load(qmlRequest("p4"));
@@ -133,7 +139,7 @@ private slots:
     void aMissingLegacyPluginFails()
     {
         Recorder recorder;
-        UiPluginLoader loader(nullptr, recorder.bind());
+        UiPluginLoader loader(recorder.bind(), admitNothing());
         QSignalSpy failed(&loader, &UiPluginLoader::pluginLoadFailed);
         QSignalSpy loaded(&loader, &UiPluginLoader::pluginLoaded);
 
@@ -158,9 +164,8 @@ private slots:
         file.close();
 
         Recorder recorder;
-        UiPluginLoader loader(nullptr, recorder.bind());
         QStringList asked;
-        loader.setAdmitConsumer([&](const QString& name) {
+        UiPluginLoader loader(recorder.bind(), [&](const QString& name) {
             asked << name;
             return name == QStringLiteral("admitted_view") ? QStringLiteral("cred-admitted")
                                                            : QString();

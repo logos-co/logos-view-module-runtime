@@ -200,8 +200,8 @@ int main(int argc, char* argv[])
     logosAPI->setParent(&app);
 
     // Adopt the credential capability_module already holds for this plugin (the
-    // runtime admitted it, or the parent registered it). This process only
-    // installs it: a second admission would revoke the one the parent holds.
+    // runtime admitted it). This process only installs it: a second admission
+    // would revoke the one the parent holds.
     //
     // Was two saveToken() calls spelling "core" and "capability_module" by hand.
     // Those keys are TokenManager::bootstrapKeys(), and this was the fifth place

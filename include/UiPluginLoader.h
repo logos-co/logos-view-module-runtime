@@ -14,7 +14,6 @@
 #include "logos_consumer.h"
 
 class IComponent;
-class LogosAPI;
 class LogosQmlBridge;
 class QQuickWidget;
 class QWidget;
@@ -59,15 +58,13 @@ public:
     // empty when refused.
     using AdmitConsumer = std::function<QString(const QString& name)>;
 
-    // `hostApi` is the host's trusted identity; plugins never get it.
-    UiPluginLoader(LogosAPI* hostApi, LoadDependency loadDependency,
+    // The runtime admits each plugin through `admitConsumer`; this only adopts
+    // the credential it hands back.
+    UiPluginLoader(LoadDependency loadDependency, AdmitConsumer admitConsumer,
                    QObject* parent = nullptr);
     ~UiPluginLoader() override;
 
     void setBridgeSetup(BridgeSetup setup) { m_bridgeSetup = std::move(setup); }
-    // Once capability_module is the token authority, the runtime admits each
-    // plugin and this only adopts it; without it, plugins are admitted on hostApi.
-    void setAdmitConsumer(AdmitConsumer admit) { m_admitConsumer = std::move(admit); }
     // Also accept legacy plugins that only expose an invokable createWidget().
     void setAcceptInvokableWidgetFactories(bool accept) { m_acceptInvokable = accept; }
 
@@ -106,7 +103,6 @@ private:
     // tokens, and re-admitting would revoke the credential already handed out.
     logos::ConsumerIdentity consumerFor(const QString& name);
 
-    LogosAPI* m_hostApi;
     LoadDependency m_loadDependency;
     BridgeSetup m_bridgeSetup;
     AdmitConsumer m_admitConsumer;

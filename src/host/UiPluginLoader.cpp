@@ -67,11 +67,11 @@ QWidget* createWidgetByInvocation(QObject* plugin, LogosAPI* api)
 
 } // namespace
 
-UiPluginLoader::UiPluginLoader(LogosAPI* hostApi, LoadDependency loadDependency,
+UiPluginLoader::UiPluginLoader(LoadDependency loadDependency, AdmitConsumer admitConsumer,
                                QObject* parent)
     : QObject(parent)
-    , m_hostApi(hostApi)
     , m_loadDependency(std::move(loadDependency))
+    , m_admitConsumer(std::move(admitConsumer))
     , m_dependencyLoader(new CoreDependencyLoader(this))
 {
 }
@@ -133,17 +133,12 @@ logos::ConsumerIdentity UiPluginLoader::consumerFor(const QString& name)
     if (it != m_consumers.constEnd())
         return it.value();
 
-    // Isolated store, with a credential capability_module holds: minted by the
-    // runtime, or (legacy) registered over the host's trusted channel. Falling
-    // back to the host's identity would grant its authority.
+    // Isolated store, holding the credential the runtime admitted the plugin
+    // with. Falling back to the host's identity would grant its authority.
     logos::ConsumerIdentity consumer;
-    if (m_admitConsumer) {
-        const QString credential = m_admitConsumer(name);
-        if (!credential.isEmpty())
-            consumer = logos::adoptAdmittedConsumer(name, credential, this);
-    } else {
-        consumer = logos::admitConsumer(name, m_hostApi, this);
-    }
+    const QString credential = m_admitConsumer ? m_admitConsumer(name) : QString();
+    if (!credential.isEmpty())
+        consumer = logos::adoptAdmittedConsumer(name, credential, this);
     if (!consumer) {
         qWarning() << "UiPluginLoader: could not admit" << name << "as a consumer";
         return {};
