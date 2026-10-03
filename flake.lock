@@ -263,6 +263,10 @@
     "root": {
       "inputs": {
         "logos-cpp-sdk": "logos-cpp-sdk",
+        "logos-module": [
+          "logos-plugin-qt",
+          "logos-module"
+        ],
         "logos-nix": "logos-nix",
         "logos-plugin-qt": "logos-plugin-qt",
         "logos-protocol": "logos-protocol",
