@@ -303,3 +303,22 @@ set_target_properties(test_ui_host_unload PROPERTIES
 )
 
 add_test(NAME UiHostUnloadTests COMMAND test_ui_host_unload)
+
+# ── Host side: loading UI plugins into an app ──────────────────────────────
+foreach(host_test
+    test_ui_plugin_package
+    test_ui_plugin_loader
+    test_qt_core_tokens
+    dependency_entry_test
+    core_dependency_loader_test)
+  add_executable(${host_test} ${host_test}.cpp)
+  target_link_libraries(${host_test} PRIVATE
+      logos_view_module_runtime
+      Qt6::Core
+      Qt6::Test
+      logos-qt-host::logos_qt_host
+      logos-protocol::logos_protocol)
+  add_test(NAME ${host_test} COMMAND ${host_test})
+endforeach()
+
+add_subdirectory(sandbox)

@@ -1,4 +1,4 @@
-{ pkgs, logosSdk, logosQtHost, logosProtocol }:
+{ pkgs, logosSdk, logosQtHost, logosProtocol, logosModule }:
 
 pkgs.stdenv.mkDerivation {
   pname = "logos-view-module-runtime";
@@ -42,6 +42,7 @@ pkgs.stdenv.mkDerivation {
     cmakeFlagsArray+=("-DLOGOS_CPP_SDK_ROOT=${logosSdk}")
     cmakeFlagsArray+=("-DLOGOS_QT_HOST_ROOT=${logosQtHost}")
     cmakeFlagsArray+=("-DLOGOS_PROTOCOL_ROOT=${logosProtocol}")
+    cmakeFlagsArray+=("-DLOGOS_MODULE_ROOT=${logosModule}")
     # Qt splits its host TOOLS into separate packages that must run on the
     # BUILD machine; -DQT_HOST_PATH=<qtbase> cannot reach them. Empty natively.
     ${pkgs.lib.concatMapStringsSep "\n    "

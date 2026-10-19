@@ -8,7 +8,7 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 option(LOGOS_VIEW_RUNTIME_BUILD_TESTS "Build unit tests for logos-view-module-runtime" OFF)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Network RemoteObjects Qml Gui Quick)
+find_package(Qt6 REQUIRED COMPONENTS Core Network RemoteObjects Qml Gui Quick QuickWidgets Widgets)
 if(LOGOS_VIEW_RUNTIME_BUILD_TESTS)
     find_package(Qt6 REQUIRED COMPONENTS Test)
 endif()
@@ -21,6 +21,9 @@ if(NOT DEFINED LOGOS_QT_HOST_ROOT)
 endif()
 if(NOT DEFINED LOGOS_PROTOCOL_ROOT)
     message(FATAL_ERROR "LOGOS_PROTOCOL_ROOT must be defined")
+endif()
+if(NOT DEFINED LOGOS_MODULE_ROOT)
+    message(FATAL_ERROR "LOGOS_MODULE_ROOT must be defined")
 endif()
 
 message(STATUS "logos-cpp-sdk : ${LOGOS_CPP_SDK_ROOT}")
@@ -55,7 +58,8 @@ if(NOT TARGET logos-qt-host::logos_qt_host)
         "packages.<system>.logos-qt-host prefix.")
 endif()
 
-# ── Static library: LogosQmlBridge + ViewModuleHost ─────────────────────────
+# ── Static library: LogosQmlBridge + ViewModuleHost, and the host side that
+# loads UI plugins into an app (src/host) ───────────────────────────────────
 add_library(logos_view_module_runtime STATIC
     src/LogosQmlBridge.cpp
     src/ViewModuleHost.cpp
@@ -65,11 +69,34 @@ add_library(logos_view_module_runtime STATIC
     include/LogosViewReplicaFactory.h
     include/LogosIntent.h
     include/LogosIntentRouter.h
+    include/CoreDependencyLoader.h
+    include/DependencyEntry.h
+    include/IComponent.h
+    include/QmlLiveView.h
+    include/QmlSandbox.h
+    include/QtCoreTokens.h
+    include/UiPluginLoader.h
+    include/UiPluginPackage.h
+    src/host/CoreDependencyLoader.cpp
+    src/host/DenyAllNAMFactory.cpp
+    src/host/DenyAllNetworkAccessManager.cpp
+    src/host/DenyAllReply.cpp
+    src/host/QmlLiveView.cpp
+    src/host/QmlSandbox.cpp
+    src/host/QtCoreTokens.cpp
+    src/host/RestrictedUrlInterceptor.cpp
+    src/host/SandboxLogging.cpp
+    src/host/UiPluginLoader.cpp
+    src/host/UiPluginPackage.cpp
 )
 
 target_include_directories(logos_view_module_runtime PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
+)
+target_include_directories(logos_view_module_runtime PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/host
+    ${LOGOS_MODULE_ROOT}/include/module_lib
 )
 
 target_link_libraries(logos_view_module_runtime PUBLIC
@@ -77,6 +104,9 @@ target_link_libraries(logos_view_module_runtime PUBLIC
     Qt6::Network
     Qt6::RemoteObjects
     Qt6::Qml
+    Qt6::Quick
+    Qt6::QuickWidgets
+    Qt6::Widgets
     logos-qt-host::logos_qt_host
     logos-cpp-sdk::logos_headers
 )
