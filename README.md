@@ -100,9 +100,12 @@ SURFACE <surfaceToken>\n
 before the plugin runs — Qt's Wayland client uses it as the xdg-shell
 `app_id`, which is what a compositor authenticates (together with the child's
 pid, `ViewModuleHost::processId()`) — and extends its readiness line to
-`READY <source name> SURFACE <token>`. The parent accepts only the token it
-minted and exposes it as `ViewModuleHost::surfaceToken()`; a plain spawn
-leaves it empty. The token is never put on argv or in the environment.
+`READY <source name> SURFACE <token>`. The parent exposes the token it minted
+as `ViewModuleHost::surfaceToken()` from the moment `spawn()` returns -- a host
+compositor must expect it before the child's first surface commit, which can
+precede READY -- and `surfaceTokenConfirmed()` reports whether the child echoed
+the same token; a plain spawn leaves both empty/false. The token is never put
+on argv or in the environment.
 
 Host code that composites the surface binds a module name to its token
 through `LogosQmlBridge::setViewModuleSurface(module, token)` /

@@ -38,9 +38,13 @@ public:
     QString sourceName() const;
 
     // RFC-2. The surface token this spawn was minted with: 32 lowercase hex
-    // characters, the child's xdg app_id being "logos-view-<token>". Empty
-    // for a non-gui spawn, and until ready() confirms the child echoed it.
+    // characters, the child's xdg app_id being "logos-view-<token>". Empty for
+    // a non-gui spawn. Available as soon as spawn() returns, because a host
+    // compositor has to expect it BEFORE the child's first surface commit,
+    // which may well precede READY (a plugin that opens its window from
+    // initLogos). ready() then confirms the child echoed the same token.
     QString surfaceToken() const;
+    bool surfaceTokenConfirmed() const;
     // The child's pid (0 when not running), for the compositor's pid check.
     qint64 processId() const;
     bool isGui() const;

@@ -129,6 +129,10 @@ int main(int argc, char* argv[])
         qputenv("QT_QPA_PLATFORM", "wayland");
         qputenv("WAYLAND_DISPLAY", surfaceSocket.toUtf8());
         qunsetenv("DISPLAY");
+        // The host's compositor offers no server-side decoration and shows the
+        // surface as an item in its own scene; Qt's client-side decoration
+        // would otherwise paint a title bar INTO the module's buffer.
+        qputenv("QT_WAYLAND_DISABLE_WINDOWDECORATION", "1");
     }
 
     std::unique_ptr<QCoreApplication> appPtr;

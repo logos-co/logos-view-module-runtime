@@ -35,6 +35,8 @@ struct Run {
     QStringList journal;
     QString sourceName;
     QString surfaceToken;
+    QString tokenAtSpawn;   // surfaceToken() before READY
+    bool tokenConfirmed = false;
     qint64 pid = 0;
     bool ready = false;
     bool exited = false;
@@ -75,6 +77,7 @@ private:
             return r;
         }
         r.pid = host.processId();
+        r.tokenAtSpawn = host.surfaceToken();
         if (!readySpy.wait(20000)) {
             qWarning("ui-host never reported READY");
             host.stop();
@@ -84,6 +87,7 @@ private:
         r.ready = true;
         r.sourceName = host.sourceName();
         r.surfaceToken = host.surfaceToken();
+        r.tokenConfirmed = host.surfaceTokenConfirmed();
 
         auto readJournal = [&] {
             QFile f(journalPath);
@@ -143,6 +147,10 @@ private slots:
         // the module name).
         QCOMPARE(r.sourceName, QStringLiteral("gui_fixture"));
         QVERIFY(r.pid > 0);
+        // The token is known to the host from spawn() on (a compositor must
+        // expect it before the child's first commit), and READY confirms it.
+        QCOMPARE(r.tokenAtSpawn, r.surfaceToken);
+        QVERIFY(r.tokenConfirmed);
     }
 
     void plainSpawnIsUnchanged()

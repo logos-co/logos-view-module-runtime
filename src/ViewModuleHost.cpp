@@ -345,7 +345,12 @@ QString ViewModuleHost::sourceName() const
 
 QString ViewModuleHost::surfaceToken() const
 {
-    return m_surfaceToken;
+    return m_mintedSurfaceToken;
+}
+
+bool ViewModuleHost::surfaceTokenConfirmed() const
+{
+    return !m_surfaceToken.isEmpty() && m_surfaceToken == m_mintedSurfaceToken;
 }
 
 qint64 ViewModuleHost::processId() const
