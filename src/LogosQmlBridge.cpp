@@ -807,9 +807,24 @@ void LogosQmlBridge::setViewModuleSocket(const QString& moduleName,
     m_viewModuleSources[moduleName] = source;
 }
 
+void LogosQmlBridge::setViewModuleSurface(const QString& moduleName, const QString& surfaceToken)
+{
+    if (surfaceToken.isEmpty()) {
+        m_viewModuleSurfaces.remove(moduleName);
+    } else {
+        m_viewModuleSurfaces[moduleName] = surfaceToken;
+    }
+}
+
+QString LogosQmlBridge::viewModuleSurfaceToken(const QString& moduleName) const
+{
+    return m_viewModuleSurfaces.value(moduleName);
+}
+
 void LogosQmlBridge::notifyViewModuleCrashed(const QString& moduleName)
 {
     qCWarning(lcQmlBridge) << "view module crashed" << moduleName;
+    m_viewModuleSurfaces.remove(moduleName);
     dropViewModuleCaches(moduleName);
     emit viewModuleReadyChanged(moduleName, false);
     emit viewModuleCrashed(moduleName);

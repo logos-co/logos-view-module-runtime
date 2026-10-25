@@ -57,6 +57,66 @@ future Logos host application can link the same library and use the same
   listening — the name the backend was published under, which the parent
   needs to acquire it.
 
+### GUI mode and the surface handshake (`--gui`, `--surface-socket`)
+
+By default `ui-host` is a `QCoreApplication`: a backend has no platform
+plugin and cannot open a window, and everything a `ui_qml` module shows is
+drawn by its QML inside the host. A module whose view *is* a renderer (a map,
+a video, a 3D scene) needs its backend to render in its own process, so
+`ui-host` has an opt-in GUI mode:
+
+```
+ui-host --name <module> --path <plugin> --socket <qtro socket> [--gui] [--surface-socket <name>]
+```
+
+- `--gui` constructs a `QGuiApplication` instead (with
+  `quitOnLastWindowClosed` off — the process's lifetime stays the parent's).
+  Nothing is injected into the plugin; it may create its own `QQuickWindow`
+  (or `QWindow` + `QOpenGLContext`) from `initLogos()` on. Without `--gui`
+  the binary runs the same code path as before.
+- `--surface-socket <name>` (implies `--gui`) names the Wayland socket of the
+  host's nested compositor. Before the application is constructed, `ui-host`
+  sets `QT_QPA_PLATFORM=wayland` and `WAYLAND_DISPLAY=<name>` for itself and
+  clears `DISPLAY`, so its windows reach that compositor and no other display.
+
+The parent chooses the mode with `ViewSpawnOptions`:
+
+```cpp
+ViewSpawnOptions opts;
+opts.gui = true;                      // or opts.surfaceSocket = compositorSocket;
+host->spawn(name, path, authToken, opts);
+```
+
+For a GUI spawn `ViewModuleHost` also mints a per-spawn **surface token**
+(16 random bytes, hex). It travels on the existing `_token` local socket as a
+second line after the auth token:
+
+```
+<authToken>\n
+SURFACE <surfaceToken>\n
+```
+
+`ui-host` sets `QGuiApplication::setDesktopFileName("logos-view-<token>")`
+before the plugin runs — Qt's Wayland client uses it as the xdg-shell
+`app_id`, which is what a compositor authenticates (together with the child's
+pid, `ViewModuleHost::processId()`) — and extends its readiness line to
+`READY <source name> SURFACE <token>`. The parent accepts only the token it
+minted and exposes it as `ViewModuleHost::surfaceToken()`; a plain spawn
+leaves it empty. The token is never put on argv or in the environment.
+
+Host code that composites the surface binds a module name to its token
+through `LogosQmlBridge::setViewModuleSurface(module, token)` /
+`viewModuleSurfaceToken(module)`. Neither is `Q_INVOKABLE`: like the intent
+host-side API, their absence from the metaobject is what keeps the token away
+from app QML, which sees the bridge as `logos`.
+
+An old `ui-host` rejects `--gui` as an unknown option and exits; the parent
+sees `processExited` and the module never becomes ready. A GUI-capable plugin
+started by an old host (no `--gui`) should detect
+`qobject_cast<QGuiApplication*>(qApp) == nullptr` and degrade rather than
+crash. `tests/test_ui_host_gui.cpp` drives both modes against the real
+binaries.
+
 ## View object convention
 
 A view module plugin keeps its plugin-lifecycle class separate from the

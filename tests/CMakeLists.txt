@@ -303,3 +303,40 @@ set_target_properties(test_ui_host_unload PROPERTIES
 )
 
 add_test(NAME UiHostUnloadTests COMMAND test_ui_host_unload)
+
+# ── GUI mode and surface handshake (ui-host --gui, RFC-1 / RFC-2) ──────────
+#
+# One fixture plugin that records the application class it was given, the
+# app_id ui-host set from the surface token, and whether the QQuickWindow it
+# opens is exposed; one test that spawns the real ui-host on it through the
+# real ViewModuleHost, in gui mode and plain.
+add_library(test_gui_fixture MODULE test_gui_fixture.cpp)
+target_link_libraries(test_gui_fixture PRIVATE Qt6::Core Qt6::Gui Qt6::Quick)
+
+add_executable(test_ui_host_gui test_ui_host_gui.cpp)
+
+target_link_libraries(test_ui_host_gui PRIVATE
+    logos_view_module_runtime
+    Qt6::Core
+    Qt6::Network
+    Qt6::Test
+    Qt6::RemoteObjects
+    logos-qt-host::logos_qt_host
+    logos-cpp-sdk::logos_headers
+)
+
+target_compile_definitions(test_ui_host_gui PRIVATE
+    FIXTURE_PLUGIN_GUI="$<TARGET_FILE:test_gui_fixture>"
+)
+
+add_dependencies(test_ui_host_gui ui-host test_gui_fixture)
+
+# Same reason as test_ui_host_unload: ui-host is resolved beside the executable.
+set_target_properties(test_ui_host_gui PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+add_test(NAME UiHostGuiTests COMMAND test_ui_host_gui)
+# The child inherits this; ui-host only overrides it when --surface-socket is
+# given. The software scene graph is chosen by the fixture itself.
+set_tests_properties(UiHostGuiTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

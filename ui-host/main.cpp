@@ -9,6 +9,7 @@
 // plugin is NOT discoverable by other modules.
 
 #include <QCoreApplication>
+#include <QGuiApplication>
 #include <QCommandLineParser>
 #include <QLocalSocket>
 #include <QFileInfo>
@@ -23,6 +24,7 @@
 #include <cerrno>
 #include <csignal>
 #include <cstring>
+#include <memory>
 #include <thread>
 #ifndef _WIN32
 #include <fcntl.h>
@@ -95,7 +97,50 @@ int main(int argc, char* argv[])
     }
 #endif
 
-    QCoreApplication app(argc, argv);
+    // GUI mode (RFC-1). The application class has to be chosen before any
+    // QCoreApplication exists, and QCommandLineParser needs one to run, so the
+    // two switches that decide it are pre-scanned by hand here; the parser
+    // below still declares them so it accepts (and documents) them.
+    //
+    //   --gui                       QGuiApplication instead of QCoreApplication
+    //   --surface-socket <name>     implies --gui; the host's nested Wayland
+    //                               compositor socket (RFC-2/RFC-4)
+    //
+    // Without --gui the process is a QCoreApplication exactly as before: same
+    // object, same code path.
+    bool gui = false;
+    QString surfaceSocket;
+    for (int i = 1; i < argc; ++i) {
+        const QByteArray arg(argv[i]);
+        if (arg == "--gui") {
+            gui = true;
+        } else if (arg == "--surface-socket" && i + 1 < argc) {
+            surfaceSocket = QString::fromLocal8Bit(argv[++i]);
+            gui = true;
+        } else if (arg.startsWith("--surface-socket=")) {
+            surfaceSocket = QString::fromLocal8Bit(arg.mid(static_cast<int>(strlen("--surface-socket="))));
+            gui = true;
+        }
+    }
+    if (!surfaceSocket.isEmpty()) {
+        // Connect to the host's compositor and to nothing else: the Qt wayland
+        // client plugin reads WAYLAND_DISPLAY, and a stray DISPLAY would let
+        // the xcb plugin be chosen by a QT_QPA_PLATFORM fallback list.
+        qputenv("QT_QPA_PLATFORM", "wayland");
+        qputenv("WAYLAND_DISPLAY", surfaceSocket.toUtf8());
+        qunsetenv("DISPLAY");
+    }
+
+    std::unique_ptr<QCoreApplication> appPtr;
+    if (gui) {
+        appPtr = std::make_unique<QGuiApplication>(argc, argv);
+        // A module closing its window must not end the process; its lifetime
+        // is the parent's (RFC-5).
+        QGuiApplication::setQuitOnLastWindowClosed(false);
+    } else {
+        appPtr = std::make_unique<QCoreApplication>(argc, argv);
+    }
+    QCoreApplication& app = *appPtr;
     app.setOrganizationName("Logos");
     app.setOrganizationDomain("logos.co");
     app.setApplicationName("ui-host");
@@ -156,13 +201,22 @@ int main(int argc, char* argv[])
     QCommandLineOption socketOpt(QStringList() << "socket",
                                  "Local socket name for QRemoteObjectHost", "socket_name");
 
+    QCommandLineOption guiOpt(QStringList() << "gui",
+                              "Run as a QGuiApplication so the plugin may open windows (RFC-1)");
+    QCommandLineOption surfaceSocketOpt(QStringList() << "surface-socket",
+                                        "Wayland socket of the host's nested compositor; implies --gui (RFC-2)",
+                                        "socket_name");
+
     parser.addOption(nameOpt);
     parser.addOption(pathOpt);
     parser.addOption(socketOpt);
+    parser.addOption(guiOpt);
+    parser.addOption(surfaceSocketOpt);
     parser.process(app);
 
     if (!parser.isSet(nameOpt) || !parser.isSet(pathOpt) || !parser.isSet(socketOpt)) {
-        qCritical() << "Usage: ui-host --name <module_name> --path <plugin.so> --socket <socket_name>";
+        qCritical() << "Usage: ui-host --name <module_name> --path <plugin.so> --socket <socket_name>"
+                       " [--gui] [--surface-socket <socket_name>]";
         return 1;
     }
 
@@ -170,8 +224,16 @@ int main(int argc, char* argv[])
     const QString pluginPath = parser.value(pathOpt);
     const QString socketName = parser.value(socketOpt);
 
-    // Receive the per-spawn auth token from the parent (ViewModuleHost)
+    // Receive the per-spawn credentials from the parent (ViewModuleHost):
+    //
+    //   <authToken>\n
+    //   SURFACE <surfaceToken>\n        (only when spawned with gui)
+    //
+    // The parent closes the socket after writing, so read until it does; a
+    // parent that sends a single line (no surface) yields an empty surface
+    // token. The first line is the auth token whatever follows it.
     QString authToken;
+    QString surfaceToken;
     {
         QLocalSocket client;
         client.connectToServer(socketName + QStringLiteral("_token"));
@@ -185,12 +247,33 @@ int main(int argc, char* argv[])
                         << moduleName;
             return 1;
         }
-        authToken = QString::fromUtf8(client.readAll());
+        QByteArray payload = client.readAll();
+        while (client.state() == QLocalSocket::ConnectedState
+               && client.waitForReadyRead(2000)) {
+            payload += client.readAll();
+        }
+        payload += client.readAll();
         client.disconnectFromServer();
+
+        const QList<QByteArray> lines = payload.split('\n');
+        authToken = QString::fromUtf8(lines.value(0)).trimmed();
+        for (int i = 1; i < lines.size(); ++i) {
+            const QByteArray line = lines.at(i).trimmed();
+            if (line.startsWith("SURFACE ")) {
+                surfaceToken = QString::fromUtf8(line.mid(8).trimmed());
+            }
+        }
     }
     if (authToken.isEmpty()) {
         qCritical() << "ui-host: parent sent empty auth token for" << moduleName;
         return 1;
+    }
+    if (gui && !surfaceToken.isEmpty()) {
+        // The xdg-shell app_id of every window this process opens (Qt's
+        // wayland client uses the desktop file name); the host's compositor
+        // admits a toplevel only for a token it minted, from the pid it
+        // spawned (RFC-2 §4). Set before the plugin can create a window.
+        QGuiApplication::setDesktopFileName(QStringLiteral("logos-view-") + surfaceToken);
     }
 
     QPluginLoader loader(pluginPath);
@@ -309,8 +392,13 @@ int main(int argc, char* argv[])
     }
 
     // "READY <source name>" — ViewModuleHost::sourceName() on the parent side.
+    // With a surface token: "READY <source name> SURFACE <token>" (RFC-2 §5),
+    // which the parent parses into ViewModuleHost::surfaceToken().
     QTextStream out(stdout);
-    out << "READY " << sourceName << Qt::endl;
+    out << "READY " << sourceName;
+    if (!surfaceToken.isEmpty())
+        out << " SURFACE " << surfaceToken;
+    out << Qt::endl;
     out.flush();
 
     const int rc = app.exec();

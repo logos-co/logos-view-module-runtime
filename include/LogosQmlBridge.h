@@ -240,6 +240,15 @@ public:
     void setViewModuleSocket(const QString& moduleName, const QString& socketName,
                              const QString& sourceName = QString());
 
+    // RFC-2 §6. The surface token of a view module spawned in gui mode
+    // (ViewModuleHost::surfaceToken()), so host-side code -- the Logos.Surface
+    // item -- can bind a module name to its compositor surface. Neither is
+    // Q_INVOKABLE: like the intent host-side API below, their absence from the
+    // metaobject is what keeps the token out of sandboxed app QML, which sees
+    // this object as `logos`. Cleared with the socket in notifyViewModuleCrashed.
+    void setViewModuleSurface(const QString& moduleName, const QString& surfaceToken);
+    QString viewModuleSurfaceToken(const QString& moduleName) const;
+
     // ── Intent host-side API — NOT reachable from QML ────────────────────
     //
     // None are Q_INVOKABLE or slots, so none appear in the metaobject. That
@@ -396,6 +405,7 @@ private:
     // Per-view-module state
     QMap<QString, QString> m_viewModuleSockets;
     QMap<QString, QString> m_viewModuleSources;
+    QMap<QString, QString> m_viewModuleSurfaces;
     QMap<QString, QRemoteObjectNode*> m_replicaNodes;
     QMap<QString, QRemoteObjectReplica*> m_replicas;
     QMap<QString, QAbstractItemModelReplica*> m_modelReplicas;

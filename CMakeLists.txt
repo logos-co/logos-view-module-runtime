@@ -90,8 +90,11 @@ target_include_directories(ui-host PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+# Qt6::Gui for the opt-in --gui mode (RFC-1); Qt6::Quick is deliberately not
+# linked -- a plugin that renders brings its own.
 target_link_libraries(ui-host PRIVATE
     Qt6::Core
+    Qt6::Gui
     Qt6::Network
     Qt6::RemoteObjects
     logos-qt-host::logos_qt_host

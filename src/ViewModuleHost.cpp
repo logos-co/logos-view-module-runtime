@@ -8,6 +8,7 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QPointer>
+#include <QRandomGenerator>
 #include <QUuid>
 #include <QDebug>
 #ifdef Q_OS_WIN
@@ -62,6 +63,24 @@ ViewModuleHost::~ViewModuleHost()
 bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
                            const QString& authToken)
 {
+    return spawn(moduleName, pluginPath, authToken, ViewSpawnOptions{});
+}
+
+namespace {
+// RFC-2 §2: 16 bytes from the system CSPRNG, hex. Distinct from the auth token
+// (a capability credential); it only ever identifies a window to the host.
+QString mintSurfaceToken()
+{
+    QByteArray bytes(16, Qt::Uninitialized);
+    QRandomGenerator::system()->fillRange(reinterpret_cast<quint32*>(bytes.data()),
+                                          bytes.size() / static_cast<int>(sizeof(quint32)));
+    return QString::fromLatin1(bytes.toHex());
+}
+} // namespace
+
+bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
+                           const QString& authToken, const ViewSpawnOptions& options)
+{
     if (m_process) {
         qCWarning(lcViewHost) << "process already running for" << m_moduleName;
         return false;
@@ -75,6 +94,10 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
     m_moduleName = moduleName;
     m_stdoutBuffer.clear();
     m_readyEmitted = false;
+    m_options = options;
+    if (!m_options.surfaceSocket.isEmpty()) m_options.gui = true;
+    m_surfaceToken.clear();
+    m_mintedSurfaceToken = m_options.gui ? mintSurfaceToken() : QString();
 
     QString uniqueId = QUuid::createUuid().toString(QUuid::Id128).left(8);
     m_socketName = QStringLiteral("logos_view_%1_%2").arg(moduleName, uniqueId);
@@ -103,14 +126,22 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
         return false;
     }
 
+    // RFC-2 §3: the auth token, then -- only for a gui spawn -- the surface
+    // token as a second line. A ui-host that predates the second line would
+    // take the whole payload as its auth token, but such a ui-host also
+    // rejects --gui as an unknown option and never reads the socket at all.
     QPointer<QLocalServer> serverGuard(m_tokenServer);
-    const QString tokenToSend = authToken;
+    QByteArray payload = authToken.toUtf8();
+    if (m_options.gui) {
+        payload += '\n';
+        payload += "SURFACE " + m_mintedSurfaceToken.toLatin1() + '\n';
+    }
     connect(m_tokenServer, &QLocalServer::newConnection, this,
-        [serverGuard, tokenToSend]() {
+        [serverGuard, payload]() {
             if (!serverGuard) return;
             QLocalSocket* sock = serverGuard->nextPendingConnection();
             if (!sock) return;
-            sock->write(tokenToSend.toUtf8());
+            sock->write(payload);
             sock->flush();
             sock->waitForBytesWritten(2000);
             sock->disconnectFromServer();
@@ -183,7 +214,28 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
             const QByteArray trimmed = line.trimmed();
             if (!m_readyEmitted
                 && (trimmed == "READY" || trimmed.startsWith("READY "))) {
-                m_sourceName = QString::fromUtf8(trimmed.mid(6).trimmed());
+                // "READY <source>[ SURFACE <token>]" (RFC-2 §5). The token is
+                // accepted only if it is the one this spawn minted.
+                QByteArray rest = trimmed.mid(6).trimmed();
+                QByteArray echoed;
+                const int surfaceIdx = rest.indexOf(" SURFACE ");
+                if (surfaceIdx != -1) {
+                    echoed = rest.mid(surfaceIdx + 9).trimmed();
+                    rest = rest.left(surfaceIdx).trimmed();
+                } else if (rest.startsWith("SURFACE ")) {
+                    // Empty source name: "READY SURFACE <token>".
+                    echoed = rest.mid(8).trimmed();
+                    rest.clear();
+                }
+                if (!echoed.isEmpty()) {
+                    if (QString::fromLatin1(echoed) == m_mintedSurfaceToken) {
+                        m_surfaceToken = m_mintedSurfaceToken;
+                    } else {
+                        qCWarning(lcViewHost) << "ui-host for" << m_moduleName
+                                              << "echoed a surface token that was not minted for it";
+                    }
+                }
+                m_sourceName = QString::fromUtf8(rest);
                 m_readyEmitted = true;
                 qCDebug(lcViewHost) << "process ready for" << m_moduleName;
                 emit ready();
@@ -200,6 +252,10 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
     args << "--name" << moduleName
          << "--path" << pluginPath
          << "--socket" << m_socketName;
+    // RFC-1. The surface TOKEN is never on argv (world-readable on Linux);
+    // only the compositor socket name is, and that is not a secret.
+    if (m_options.gui) args << "--gui";
+    if (!m_options.surfaceSocket.isEmpty()) args << "--surface-socket" << m_options.surfaceSocket;
 
     qCDebug(lcViewHost) << "spawning" << uiHostPath << "for" << moduleName;
     m_process->start(uiHostPath, args);
@@ -285,4 +341,19 @@ QString ViewModuleHost::socketName() const
 QString ViewModuleHost::sourceName() const
 {
     return m_sourceName;
+}
+
+QString ViewModuleHost::surfaceToken() const
+{
+    return m_surfaceToken;
+}
+
+qint64 ViewModuleHost::processId() const
+{
+    return isRunning() ? m_process->processId() : 0;
+}
+
+bool ViewModuleHost::isGui() const
+{
+    return m_options.gui;
 }
