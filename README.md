@@ -66,7 +66,7 @@ a video, a 3D scene) needs its backend to render in its own process, so
 `ui-host` has an opt-in GUI mode:
 
 ```
-ui-host --name <module> --path <plugin> --socket <qtro socket> [--gui] [--surface-socket <name>]
+ui-host --name <module> --path <plugin> --socket <qtro socket> [--gui] [--surface-socket <name>] [--surface-transport wayland|channel]
 ```
 
 - `--gui` constructs a `QGuiApplication` instead (with
@@ -119,6 +119,75 @@ started by an old host (no `--gui`) should detect
 `qobject_cast<QGuiApplication*>(qApp) == nullptr` and degrade rather than
 crash. `tests/test_ui_host_gui.cpp` drives both modes against the real
 binaries.
+
+### The channel transport and the module API (`--surface-transport`, `LogosViewSurface`)
+
+The nested Wayland compositor above is Linux-only. For every other desktop OS
+— and as a fallback on Linux — the runtime ships a second SurfaceTransport
+with the same contract (maps RFC-6/RFC-7): the host allocates a three-slot
+ring of frame buffers in OS-native shared storage, hands them to the view over
+a bounded binary protocol on a `QLocalSocket`, grants one frame of credit at a
+time, and the view renders into the granted slot with a `QQuickRenderControl`.
+Input travels the other way as replayed `QEvent`s.
+
+| slot kind | storage | copies | where |
+|---|---|---|---|
+| `shm` | `QSharedMemory`; view reads back, host uploads | 1 | every OS |
+| `d3d11` | shared `ID3D11Texture2D` + keyed mutex | 0 | Windows (`D3D11SlotStorage.cpp`, compiled only on `WIN32`; **unverified**) |
+| `iosurface` | `IOSurface` + `MTLTexture`, Mach-port handoff | 0 | macOS (`IOSurfaceSlotStorage.mm`, compiled only on `APPLE`; **unverified**) |
+
+Both ends live in **`LogosViewSurface`**, a shared library installed to
+`lib/` (`bin/LogosViewSurface.dll` on Windows):
+
+- host side: `logos::surface::SurfaceHostSession` (`surface/SurfaceHostSession.h`) —
+  `listen()`, `expect(token, pid)`, `configure(logicalSize, dpr, visible)`,
+  `sendInput()`, `takeReadyForDisplay()` / `frameSwapped()` for the scene-graph
+  texture node;
+- view side: `SurfaceClientSession` + `SurfaceProducer`, reached by `ui-host`
+  through the C functions in `surface/SurfaceClientApi.h`.
+
+```
+ui-host --name <m> --path <p> --socket <s> --surface-transport channel --surface-socket <server name>
+```
+
+```cpp
+ViewSpawnOptions opts;
+opts.surfaceTransport = "channel";          // or "wayland"; "" = none
+opts.surfaceSocket = session->serverName();  // SurfaceHostSession::listen()
+host->spawn(name, path, authToken, opts);
+```
+
+`ui-host` does not link the library: with `--surface-transport channel` it
+`QLibrary`-loads `LogosViewSurface` after the token lines are read, calls
+`logos_view_surface_init(token, serverName, "channel")` and only then loads
+the plugin, so a headless `ui-host` still never maps `Qt6::Quick`. The
+environment is left alone (the producer never shows a window; tests run it
+under `QT_QPA_PLATFORM=offscreen`). Under `--surface-socket` without a
+transport the library is loaded too, if present, so the same module API works
+on both transports.
+
+**Module API (RFC-8).** A `view_surface` module never opens its own window.
+It includes the header-only `<logos/view_surface.h>` and asks the runtime:
+
+```cpp
+#include <logos/view_surface.h>
+
+QQuickWindow* win = LogosViewSurface::window();    // nullptr on an old runtime
+QQuickItem*   root = LogosViewSurface::rootItem(); // parent content here
+QString how = LogosViewSurface::transport();       // "wayland", "channel-shm", ..., "none"
+```
+
+The functions resolve a versioned C table (`LogosViewSurfaceV1`) that
+`ui-host` publishes as the `"logos.viewSurface.v1"` dynamic property of the
+`QCoreApplication`; nothing in the module links the library, and an old
+runtime — which publishes nothing — makes every call return `nullptr` /
+`"none"`, so the module can fall back to a window of its own. Rules: call from
+the main thread, from `initLogos()` on; choose
+`QQuickWindow::setGraphicsApi()` before the first `window()` call; never
+`show()`, `resize()` or delete the window — geometry is the host's. Under the
+wayland transport `window()` is a plain `QQuickWindow` shown as a toplevel
+(the compositor does the rest); under channel it is the producer's offscreen
+window.
 
 ## View object convention
 

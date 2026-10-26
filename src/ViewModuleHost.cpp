@@ -96,6 +96,16 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
     m_readyEmitted = false;
     m_options = options;
     if (!m_options.surfaceSocket.isEmpty()) m_options.gui = true;
+    if (m_options.surfaceTransport.isEmpty() && !m_options.surfaceSocket.isEmpty())
+        m_options.surfaceTransport = QStringLiteral("wayland");
+    if (m_options.surfaceTransport == QLatin1String("channel")) {
+        m_options.gui = true;
+        if (m_options.surfaceSocket.isEmpty()) {
+            qCWarning(lcViewHost) << "channel transport for" << moduleName
+                                  << "needs the host session's server name";
+            return false;
+        }
+    }
     m_surfaceToken.clear();
     m_mintedSurfaceToken = m_options.gui ? mintSurfaceToken() : QString();
 
@@ -256,6 +266,10 @@ bool ViewModuleHost::spawn(const QString& moduleName, const QString& pluginPath,
     // only the compositor socket name is, and that is not a secret.
     if (m_options.gui) args << "--gui";
     if (!m_options.surfaceSocket.isEmpty()) args << "--surface-socket" << m_options.surfaceSocket;
+    // RFC-7. Only spelled out for channel: a ui-host that predates the option
+    // keeps working for wayland spawns.
+    if (m_options.surfaceTransport == QLatin1String("channel"))
+        args << "--surface-transport" << m_options.surfaceTransport;
 
     qCDebug(lcViewHost) << "spawning" << uiHostPath << "for" << moduleName;
     m_process->start(uiHostPath, args);

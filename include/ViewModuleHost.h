@@ -19,7 +19,18 @@ struct ViewSpawnOptions {
     // ui-host sets QT_QPA_PLATFORM=wayland and WAYLAND_DISPLAY=<this> for
     // itself before constructing its application, so its windows reach that
     // compositor and no other display.
+    //
+    // RFC-7: with surfaceTransport == "channel" this is instead the name of
+    // the host's SurfaceHostSession QLocalServer.
     QString surfaceSocket;
+    // RFC-6/RFC-7: which SurfaceTransport family the host offers.
+    //   ""         none (plain --gui, or headless)
+    //   "wayland"  RFC-4 nested compositor; surfaceSocket is WAYLAND_DISPLAY
+    //   "channel"  RFC-7 slot ring over a local socket; surfaceSocket is the
+    //              server name. Implies gui. ui-host loads LogosViewSurface
+    //              and connects before the plugin is loaded.
+    // Empty with a non-empty surfaceSocket means "wayland" (pre-RFC-7 callers).
+    QString surfaceTransport;
 };
 
 class ViewModuleHost : public QObject {
@@ -36,6 +47,9 @@ public:
     bool isRunning() const;
     QString socketName() const;
     QString sourceName() const;
+    // The module this host was spawned for (empty before spawn()).
+    QString moduleName() const { return m_moduleName; }
+    const ViewSpawnOptions& spawnOptions() const { return m_options; }
 
     // RFC-2. The surface token this spawn was minted with: 32 lowercase hex
     // characters, the child's xdg app_id being "logos-view-<token>". Empty for
