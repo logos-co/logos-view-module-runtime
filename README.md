@@ -57,6 +57,138 @@ future Logos host application can link the same library and use the same
   listening — the name the backend was published under, which the parent
   needs to acquire it.
 
+### GUI mode and the surface handshake (`--gui`, `--surface-socket`)
+
+By default `ui-host` is a `QCoreApplication`: a backend has no platform
+plugin and cannot open a window, and everything a `ui_qml` module shows is
+drawn by its QML inside the host. A module whose view *is* a renderer (a map,
+a video, a 3D scene) needs its backend to render in its own process, so
+`ui-host` has an opt-in GUI mode:
+
+```
+ui-host --name <module> --path <plugin> --socket <qtro socket> [--gui] [--surface-socket <name>] [--surface-transport wayland|channel]
+```
+
+- `--gui` constructs a `QGuiApplication` instead (with
+  `quitOnLastWindowClosed` off — the process's lifetime stays the parent's).
+  Nothing is injected into the plugin; it may create its own `QQuickWindow`
+  (or `QWindow` + `QOpenGLContext`) from `initLogos()` on. Without `--gui`
+  the binary runs the same code path as before.
+- `--surface-socket <name>` (implies `--gui`) names the Wayland socket of the
+  host's nested compositor. Before the application is constructed, `ui-host`
+  sets `QT_QPA_PLATFORM=wayland` and `WAYLAND_DISPLAY=<name>` for itself and
+  clears `DISPLAY`, so its windows reach that compositor and no other display.
+
+The parent chooses the mode with `ViewSpawnOptions`:
+
+```cpp
+ViewSpawnOptions opts;
+opts.gui = true;                      // or opts.surfaceSocket = compositorSocket;
+host->spawn(name, path, authToken, opts);
+```
+
+For a GUI spawn `ViewModuleHost` also mints a per-spawn **surface token**
+(16 random bytes, hex). It travels on the existing `_token` local socket as a
+second line after the auth token:
+
+```
+<authToken>\n
+SURFACE <surfaceToken>\n
+```
+
+`ui-host` sets `QGuiApplication::setDesktopFileName("logos-view-<token>")`
+before the plugin runs — Qt's Wayland client uses it as the xdg-shell
+`app_id`, which is what a compositor authenticates (together with the child's
+pid, `ViewModuleHost::processId()`) — and extends its readiness line to
+`READY <source name> SURFACE <token>`. The parent exposes the token it minted
+as `ViewModuleHost::surfaceToken()` from the moment `spawn()` returns -- a host
+compositor must expect it before the child's first surface commit, which can
+precede READY -- and `surfaceTokenConfirmed()` reports whether the child echoed
+the same token; a plain spawn leaves both empty/false. The token is never put
+on argv or in the environment.
+
+Host code that composites the surface binds a module name to its token
+through `LogosQmlBridge::setViewModuleSurface(module, token)` /
+`viewModuleSurfaceToken(module)`. Neither is `Q_INVOKABLE`: like the intent
+host-side API, their absence from the metaobject is what keeps the token away
+from app QML, which sees the bridge as `logos`.
+
+An old `ui-host` rejects `--gui` as an unknown option and exits; the parent
+sees `processExited` and the module never becomes ready. A GUI-capable plugin
+started by an old host (no `--gui`) should detect
+`qobject_cast<QGuiApplication*>(qApp) == nullptr` and degrade rather than
+crash. `tests/test_ui_host_gui.cpp` drives both modes against the real
+binaries.
+
+### The channel transport and the module API (`--surface-transport`, `LogosViewSurface`)
+
+The nested Wayland compositor above is Linux-only. For every other desktop OS
+— and as a fallback on Linux — the runtime ships a second SurfaceTransport
+with the same contract (maps RFC-6/RFC-7): the host allocates a three-slot
+ring of frame buffers in OS-native shared storage, hands them to the view over
+a bounded binary protocol on a `QLocalSocket`, grants one frame of credit at a
+time, and the view renders into the granted slot with a `QQuickRenderControl`.
+Input travels the other way as replayed `QEvent`s.
+
+| slot kind | storage | copies | where |
+|---|---|---|---|
+| `shm` | `QSharedMemory`; view reads back, host uploads | 1 | every OS |
+| `d3d11` | shared `ID3D11Texture2D` + keyed mutex | 0 | Windows (`D3D11SlotStorage.cpp`, compiled only on `WIN32`; **unverified**) |
+| `iosurface` | `IOSurface` + `MTLTexture`, Mach-port handoff | 0 | macOS (`IOSurfaceSlotStorage.mm`, compiled only on `APPLE`; **unverified**) |
+
+Both ends live in **`LogosViewSurface`**, a shared library installed to
+`lib/` (`bin/LogosViewSurface.dll` on Windows):
+
+- host side: `logos::surface::SurfaceHostSession` (`surface/SurfaceHostSession.h`) —
+  `listen()`, `expect(token, pid)`, `configure(logicalSize, dpr, visible)`,
+  `sendInput()`, `takeReadyForDisplay()` / `frameSwapped()` for the scene-graph
+  texture node;
+- view side: `SurfaceClientSession` + `SurfaceProducer`, reached by `ui-host`
+  through the C functions in `surface/SurfaceClientApi.h`.
+
+```
+ui-host --name <m> --path <p> --socket <s> --surface-transport channel --surface-socket <server name>
+```
+
+```cpp
+ViewSpawnOptions opts;
+opts.surfaceTransport = "channel";          // or "wayland"; "" = none
+opts.surfaceSocket = session->serverName();  // SurfaceHostSession::listen()
+host->spawn(name, path, authToken, opts);
+```
+
+`ui-host` does not link the library: with `--surface-transport channel` it
+`QLibrary`-loads `LogosViewSurface` after the token lines are read, calls
+`logos_view_surface_init(token, serverName, "channel")` and only then loads
+the plugin, so a headless `ui-host` still never maps `Qt6::Quick`. The
+environment is left alone (the producer never shows a window; tests run it
+under `QT_QPA_PLATFORM=offscreen`). Under `--surface-socket` without a
+transport the library is loaded too, if present, so the same module API works
+on both transports.
+
+**Module API (RFC-8).** A `view_surface` module never opens its own window.
+It includes the header-only `<logos/view_surface.h>` and asks the runtime:
+
+```cpp
+#include <logos/view_surface.h>
+
+QQuickWindow* win = LogosViewSurface::window();    // nullptr on an old runtime
+QQuickItem*   root = LogosViewSurface::rootItem(); // parent content here
+QString how = LogosViewSurface::transport();       // "wayland", "channel-shm", ..., "none"
+```
+
+The functions resolve a versioned C table (`LogosViewSurfaceV1`) that
+`ui-host` publishes as the `"logos.viewSurface.v1"` dynamic property of the
+`QCoreApplication`; nothing in the module links the library, and an old
+runtime — which publishes nothing — makes every call return `nullptr` /
+`"none"`, so the module can fall back to a window of its own. Rules: call from
+the main thread, from `initLogos()` on; choose
+`QQuickWindow::setGraphicsApi()` before the first `window()` call; never
+`show()`, `resize()` or delete the window — geometry is the host's. Under the
+wayland transport `window()` is a plain `QQuickWindow` shown as a toplevel
+(the compositor does the rest); under channel it is the producer's offscreen
+window.
+
 ## View object convention
 
 A view module plugin keeps its plugin-lifecycle class separate from the

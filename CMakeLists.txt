@@ -83,15 +83,77 @@ target_link_libraries(logos_view_module_runtime PUBLIC
 
 set_target_properties(logos_view_module_runtime PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# ── Shared library: LogosViewSurface (RFC-7 channel transport, RFC-8 API) ──
+# Both ends of the channel SurfaceTransport live here: the host session
+# Basecamp links, and the client session ui-host loads with QLibrary only when
+# spawned with --surface-transport channel (so the headless ui-host still has
+# no Qt6::Quick in its process). Qt6::GuiPrivate is needed for <rhi/qrhi.h>,
+# the public-but-private QRhi API that the slot storage renders through.
+find_package(Qt6 REQUIRED COMPONENTS GuiPrivate)
+set(LOGOS_VIEW_SURFACE_SOURCES
+    surface/SurfaceProtocol.h
+    surface/SurfaceExport.h
+    surface/SurfaceChannel.h
+    surface/SurfaceChannel.cpp
+    surface/SlotStorage.h
+    surface/ShmSlotStorage.cpp
+    surface/SurfaceHostSession.h
+    surface/SurfaceHostSession.cpp
+    surface/SurfaceProducer.h
+    surface/SurfaceProducer.cpp
+    surface/SurfaceClientSession.h
+    surface/SurfaceClientSession.cpp
+    surface/SurfaceClientApi.h
+    surface/SurfaceClientApi.cpp
+    include/logos/view_surface.h
+)
+if(WIN32)
+    list(APPEND LOGOS_VIEW_SURFACE_SOURCES surface/D3D11SlotStorage.cpp)
+endif()
+if(APPLE AND NOT IOS)
+    enable_language(OBJCXX)
+    list(APPEND LOGOS_VIEW_SURFACE_SOURCES surface/IOSurfaceSlotStorage.mm)
+endif()
+
+add_library(LogosViewSurface SHARED ${LOGOS_VIEW_SURFACE_SOURCES})
+target_compile_definitions(LogosViewSurface PRIVATE LOGOS_VIEW_SURFACE_LIBRARY)
+target_include_directories(LogosViewSurface PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/surface>
+    $<INSTALL_INTERFACE:include>
+    $<INSTALL_INTERFACE:include/logos/surface>
+)
+target_link_libraries(LogosViewSurface
+    PUBLIC Qt6::Core Qt6::Network Qt6::Gui Qt6::Quick
+    PRIVATE Qt6::GuiPrivate
+)
+if(WIN32)
+    target_link_libraries(LogosViewSurface PRIVATE d3d11 dxgi)
+endif()
+if(APPLE AND NOT IOS)
+    target_link_libraries(LogosViewSurface PRIVATE "-framework IOSurface" "-framework Metal" "-framework Foundation")
+endif()
+set_target_properties(LogosViewSurface PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    VERSION 1.0.0
+    SOVERSION 1
+)
+
 # ── ui-host executable ──────────────────────────────────────────────────────
 add_executable(ui-host ui-host/main.cpp)
 
 target_include_directories(ui-host PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/surface   # SurfaceClientApi.h typedefs only (RFC-7); not linked
 )
+add_dependencies(ui-host LogosViewSurface)
 
+# Qt6::Gui for the opt-in --gui mode (RFC-1); Qt6::Quick is deliberately not
+# linked -- a plugin that renders brings its own.
 target_link_libraries(ui-host PRIVATE
     Qt6::Core
+    Qt6::Gui
     Qt6::Network
     Qt6::RemoteObjects
     logos-qt-host::logos_qt_host
@@ -116,8 +178,24 @@ endif()
 
 # ── Install ─────────────────────────────────────────────────────────────────
 install(TARGETS logos_view_module_runtime ARCHIVE DESTINATION lib)
+install(TARGETS LogosViewSurface
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+    RUNTIME DESTINATION bin)
 install(TARGETS ui-host RUNTIME DESTINATION bin)
 install(DIRECTORY include/ DESTINATION include)
+# Host-side headers Basecamp compiles against (the module-facing header is
+# include/logos/view_surface.h, installed with the rest of include/).
+install(FILES
+    surface/SurfaceProtocol.h
+    surface/SurfaceExport.h
+    surface/SurfaceChannel.h
+    surface/SlotStorage.h
+    surface/SurfaceHostSession.h
+    surface/SurfaceProducer.h
+    surface/SurfaceClientSession.h
+    surface/SurfaceClientApi.h
+    DESTINATION include/logos/surface)
 
 # ── Tests ───────────────────────────────────────────────────────────────────
 if(LOGOS_VIEW_RUNTIME_BUILD_TESTS)

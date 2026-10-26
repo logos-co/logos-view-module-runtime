@@ -303,3 +303,81 @@ set_target_properties(test_ui_host_unload PROPERTIES
 )
 
 add_test(NAME UiHostUnloadTests COMMAND test_ui_host_unload)
+
+# ── GUI mode and surface handshake (ui-host --gui, RFC-1 / RFC-2) ──────────
+#
+# One fixture plugin that records the application class it was given, the
+# app_id ui-host set from the surface token, and whether the QQuickWindow it
+# opens is exposed; one test that spawns the real ui-host on it through the
+# real ViewModuleHost, in gui mode and plain.
+add_library(test_gui_fixture MODULE test_gui_fixture.cpp)
+# The fixture is a MODULE: it includes the header-only <logos/view_surface.h>
+# (RFC-8) and links nothing of LogosViewSurface, as a real module would not.
+target_include_directories(test_gui_fixture PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(test_gui_fixture PRIVATE Qt6::Core Qt6::Gui Qt6::Quick)
+
+add_executable(test_ui_host_gui test_ui_host_gui.cpp)
+
+target_link_libraries(test_ui_host_gui PRIVATE
+    logos_view_module_runtime
+    LogosViewSurface
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Network
+    Qt6::Test
+    Qt6::RemoteObjects
+    logos-qt-host::logos_qt_host
+    logos-cpp-sdk::logos_headers
+)
+
+target_compile_definitions(test_ui_host_gui PRIVATE
+    FIXTURE_PLUGIN_GUI="$<TARGET_FILE:test_gui_fixture>"
+)
+
+add_dependencies(test_ui_host_gui ui-host test_gui_fixture LogosViewSurface)
+
+# Same reason as test_ui_host_unload: ui-host is resolved beside the executable.
+set_target_properties(test_ui_host_gui PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+add_test(NAME UiHostGuiTests COMMAND test_ui_host_gui)
+# The child inherits this; ui-host only overrides it when --surface-socket is
+# given. The software scene graph is chosen by the fixture itself.
+set_tests_properties(UiHostGuiTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# ── Channel SurfaceTransport (RFC-7 / RFC-8), two processes ─────────────────
+#
+# test_surface_view is the VIEW: a QGuiApplication that goes through the C
+# API of SurfaceClientApi.h and the header-only module API exactly as ui-host
+# and a module would, and journals every input event it is replayed.
+# test_surface_channel is the HOST: a SurfaceHostSession that spawns it, reads
+# the frames it renders as QImages (shm) and drives geometry, credits, input
+# and failure. No GPU, no compositor: QT_QPA_PLATFORM=offscreen, software
+# scene graph.
+add_executable(test_surface_view test_surface_view.cpp)
+target_link_libraries(test_surface_view PRIVATE
+    LogosViewSurface
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Quick
+)
+set_target_properties(test_surface_view PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+add_executable(test_surface_channel test_surface_channel.cpp)
+target_link_libraries(test_surface_channel PRIVATE
+    LogosViewSurface
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Network
+    Qt6::Test
+)
+target_compile_definitions(test_surface_channel PRIVATE
+    SURFACE_VIEW_BINARY="$<TARGET_FILE:test_surface_view>"
+)
+add_dependencies(test_surface_channel test_surface_view)
+
+add_test(NAME SurfaceChannelTests COMMAND test_surface_channel)
+set_tests_properties(SurfaceChannelTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

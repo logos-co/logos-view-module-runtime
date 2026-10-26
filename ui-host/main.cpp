@@ -9,7 +9,10 @@
 // plugin is NOT discoverable by other modules.
 
 #include <QCoreApplication>
+#include <QGuiApplication>
 #include <QCommandLineParser>
+#include <QDir>
+#include <QLibrary>
 #include <QLocalSocket>
 #include <QFileInfo>
 #include <QPluginLoader>
@@ -23,6 +26,7 @@
 #include <cerrno>
 #include <csignal>
 #include <cstring>
+#include <memory>
 #include <thread>
 #ifndef _WIN32
 #include <fcntl.h>
@@ -36,6 +40,7 @@
 #include "logos_consumer.h"
 #include "logos_plugin_unload.h"
 #include "LogosViewPlugin.h"
+#include "SurfaceClientApi.h"   // function-pointer typedefs only; the library is QLibrary-loaded
 
 // The view's chance to finish, between "stop" and teardown.
 //
@@ -95,7 +100,71 @@ int main(int argc, char* argv[])
     }
 #endif
 
-    QCoreApplication app(argc, argv);
+    // GUI mode (RFC-1). The application class has to be chosen before any
+    // QCoreApplication exists, and QCommandLineParser needs one to run, so the
+    // two switches that decide it are pre-scanned by hand here; the parser
+    // below still declares them so it accepts (and documents) them.
+    //
+    //   --gui                       QGuiApplication instead of QCoreApplication
+    //   --surface-socket <name>     implies --gui; the host's nested Wayland
+    //                               compositor socket (RFC-2/RFC-4), or with
+    //                               --surface-transport channel the host
+    //                               session's QLocalServer name (RFC-7)
+    //   --surface-transport <t>     "wayland" (default when a socket is given)
+    //                               or "channel"
+    //
+    // Without --gui the process is a QCoreApplication exactly as before: same
+    // object, same code path.
+    bool gui = false;
+    QString surfaceSocket;
+    QString surfaceTransport;
+    for (int i = 1; i < argc; ++i) {
+        const QByteArray arg(argv[i]);
+        if (arg == "--gui") {
+            gui = true;
+        } else if (arg == "--surface-socket" && i + 1 < argc) {
+            surfaceSocket = QString::fromLocal8Bit(argv[++i]);
+            gui = true;
+        } else if (arg.startsWith("--surface-socket=")) {
+            surfaceSocket = QString::fromLocal8Bit(arg.mid(static_cast<int>(strlen("--surface-socket="))));
+            gui = true;
+        } else if (arg == "--surface-transport" && i + 1 < argc) {
+            surfaceTransport = QString::fromLocal8Bit(argv[++i]);
+        } else if (arg.startsWith("--surface-transport=")) {
+            surfaceTransport = QString::fromLocal8Bit(arg.mid(static_cast<int>(strlen("--surface-transport="))));
+        }
+    }
+    if (surfaceTransport.isEmpty() && !surfaceSocket.isEmpty())
+        surfaceTransport = QStringLiteral("wayland");
+    const bool channel = surfaceTransport == QLatin1String("channel");
+    if (channel) gui = true;
+    if (!surfaceSocket.isEmpty() && !channel) {
+        // Connect to the host's compositor and to nothing else: the Qt wayland
+        // client plugin reads WAYLAND_DISPLAY, and a stray DISPLAY would let
+        // the xcb plugin be chosen by a QT_QPA_PLATFORM fallback list.
+        qputenv("QT_QPA_PLATFORM", "wayland");
+        qputenv("WAYLAND_DISPLAY", surfaceSocket.toUtf8());
+        qunsetenv("DISPLAY");
+        // The host's compositor offers no server-side decoration and shows the
+        // surface as an item in its own scene; Qt's client-side decoration
+        // would otherwise paint a title bar INTO the module's buffer.
+        qputenv("QT_WAYLAND_DISABLE_WINDOWDECORATION", "1");
+        // Desktop sessions (Plasma) export QT_WAYLAND_RECONNECT=1 so apps
+        // survive a compositor restart. Here the compositor is the host and a
+        // closed connection is a refusal (RFC-4 §2); reconnecting would spin.
+        qunsetenv("QT_WAYLAND_RECONNECT");
+    }
+
+    std::unique_ptr<QCoreApplication> appPtr;
+    if (gui) {
+        appPtr = std::make_unique<QGuiApplication>(argc, argv);
+        // A module closing its window must not end the process; its lifetime
+        // is the parent's (RFC-5).
+        QGuiApplication::setQuitOnLastWindowClosed(false);
+    } else {
+        appPtr = std::make_unique<QCoreApplication>(argc, argv);
+    }
+    QCoreApplication& app = *appPtr;
     app.setOrganizationName("Logos");
     app.setOrganizationDomain("logos.co");
     app.setApplicationName("ui-host");
@@ -156,13 +225,35 @@ int main(int argc, char* argv[])
     QCommandLineOption socketOpt(QStringList() << "socket",
                                  "Local socket name for QRemoteObjectHost", "socket_name");
 
+    QCommandLineOption guiOpt(QStringList() << "gui",
+                              "Run as a QGuiApplication so the plugin may open windows (RFC-1)");
+    QCommandLineOption surfaceSocketOpt(QStringList() << "surface-socket",
+                                        "Wayland socket of the host's nested compositor (RFC-2), or the "
+                                        "channel server name (RFC-7); implies --gui",
+                                        "socket_name");
+    QCommandLineOption surfaceTransportOpt(QStringList() << "surface-transport",
+                                           "SurfaceTransport family: wayland (default) or channel (RFC-7)",
+                                           "transport");
+
     parser.addOption(nameOpt);
     parser.addOption(pathOpt);
     parser.addOption(socketOpt);
+    parser.addOption(guiOpt);
+    parser.addOption(surfaceSocketOpt);
+    parser.addOption(surfaceTransportOpt);
     parser.process(app);
 
     if (!parser.isSet(nameOpt) || !parser.isSet(pathOpt) || !parser.isSet(socketOpt)) {
-        qCritical() << "Usage: ui-host --name <module_name> --path <plugin.so> --socket <socket_name>";
+        qCritical() << "Usage: ui-host --name <module_name> --path <plugin.so> --socket <socket_name>"
+                       " [--gui] [--surface-socket <socket_name>] [--surface-transport wayland|channel]";
+        return 1;
+    }
+    if (!surfaceTransport.isEmpty() && surfaceTransport != QLatin1String("wayland") && !channel) {
+        qCritical() << "ui-host: unknown --surface-transport" << surfaceTransport;
+        return 1;
+    }
+    if (channel && surfaceSocket.isEmpty()) {
+        qCritical() << "ui-host: --surface-transport channel needs --surface-socket <server name>";
         return 1;
     }
 
@@ -170,8 +261,16 @@ int main(int argc, char* argv[])
     const QString pluginPath = parser.value(pathOpt);
     const QString socketName = parser.value(socketOpt);
 
-    // Receive the per-spawn auth token from the parent (ViewModuleHost)
+    // Receive the per-spawn credentials from the parent (ViewModuleHost):
+    //
+    //   <authToken>\n
+    //   SURFACE <surfaceToken>\n        (only when spawned with gui)
+    //
+    // The parent closes the socket after writing, so read until it does; a
+    // parent that sends a single line (no surface) yields an empty surface
+    // token. The first line is the auth token whatever follows it.
     QString authToken;
+    QString surfaceToken;
     {
         QLocalSocket client;
         client.connectToServer(socketName + QStringLiteral("_token"));
@@ -185,12 +284,82 @@ int main(int argc, char* argv[])
                         << moduleName;
             return 1;
         }
-        authToken = QString::fromUtf8(client.readAll());
+        QByteArray payload = client.readAll();
+        while (client.state() == QLocalSocket::ConnectedState
+               && client.waitForReadyRead(2000)) {
+            payload += client.readAll();
+        }
+        payload += client.readAll();
         client.disconnectFromServer();
+
+        const QList<QByteArray> lines = payload.split('\n');
+        authToken = QString::fromUtf8(lines.value(0)).trimmed();
+        for (int i = 1; i < lines.size(); ++i) {
+            const QByteArray line = lines.at(i).trimmed();
+            if (line.startsWith("SURFACE ")) {
+                surfaceToken = QString::fromUtf8(line.mid(8).trimmed());
+            }
+        }
     }
     if (authToken.isEmpty()) {
         qCritical() << "ui-host: parent sent empty auth token for" << moduleName;
         return 1;
+    }
+    if (gui && !surfaceToken.isEmpty()) {
+        // The xdg-shell app_id of every window this process opens (Qt's
+        // wayland client uses the desktop file name); the host's compositor
+        // admits a toplevel only for a token it minted, from the pid it
+        // spawned (RFC-2 §4). Set before the plugin can create a window.
+        QGuiApplication::setDesktopFileName(QStringLiteral("logos-view-") + surfaceToken);
+    }
+
+    // RFC-7/RFC-8: the module-facing surface API. LogosViewSurface is loaded
+    // at run time rather than linked so a headless ui-host never maps
+    // Qt6::Quick (RFC-1). Under the channel transport the library connects to
+    // the host session with the token before the plugin exists; under wayland
+    // it only publishes the table (the plugin's window reaches the compositor
+    // through the Qt wayland client, as before). The table is a dynamic
+    // property on the application; a plugin that never asks for it is
+    // unaffected.
+    QLibrary surfaceLib;
+    logos_view_surface_shutdown_fn surfaceShutdown = nullptr;
+    if (gui && !surfaceToken.isEmpty() && (channel || !surfaceSocket.isEmpty())) {
+        const QString appDir = QCoreApplication::applicationDirPath();
+        const QStringList candidates = {
+#if defined(Q_OS_WIN)
+            QDir(appDir).filePath(QStringLiteral("LogosViewSurface.dll")),
+#elif defined(Q_OS_MACOS)
+            QDir(appDir).filePath(QStringLiteral("../lib/libLogosViewSurface.dylib")),
+#else
+            QDir(appDir).filePath(QStringLiteral("../lib/libLogosViewSurface.so.1")),
+            QDir(appDir).filePath(QStringLiteral("../lib/libLogosViewSurface.so")),
+#endif
+            QStringLiteral("LogosViewSurface"),   // library search path
+        };
+        for (const QString& c : candidates) {
+            surfaceLib.setFileName(c);
+            if (surfaceLib.load()) break;
+        }
+        if (!surfaceLib.isLoaded()) {
+            if (channel) {
+                qCritical() << "ui-host: --surface-transport channel but LogosViewSurface could not be loaded:"
+                            << surfaceLib.errorString();
+                return 1;
+            }
+            qWarning() << "ui-host: LogosViewSurface not available; the plugin gets no RFC-8 table:"
+                       << surfaceLib.errorString();
+        } else {
+            auto init = reinterpret_cast<logos_view_surface_init_fn>(surfaceLib.resolve("logos_view_surface_init"));
+            surfaceShutdown = reinterpret_cast<logos_view_surface_shutdown_fn>(surfaceLib.resolve("logos_view_surface_shutdown"));
+            const QByteArray tok = surfaceToken.toLatin1();
+            const QByteArray sock = surfaceSocket.toUtf8();
+            const int rc = init ? init(tok.constData(), sock.constData(), channel ? "channel" : "wayland") : -1;
+            if (rc != 0) {
+                qCritical() << "ui-host: logos_view_surface_init failed:" << rc;
+                if (channel) return 1;
+                surfaceShutdown = nullptr;
+            }
+        }
     }
 
     QPluginLoader loader(pluginPath);
@@ -309,8 +478,13 @@ int main(int argc, char* argv[])
     }
 
     // "READY <source name>" — ViewModuleHost::sourceName() on the parent side.
+    // With a surface token: "READY <source name> SURFACE <token>" (RFC-2 §5),
+    // which the parent parses into ViewModuleHost::surfaceToken().
     QTextStream out(stdout);
-    out << "READY " << sourceName << Qt::endl;
+    out << "READY " << sourceName;
+    if (!surfaceToken.isEmpty())
+        out << " SURFACE " << surfaceToken;
+    out << Qt::endl;
     out.flush();
 
     const int rc = app.exec();
@@ -322,5 +496,8 @@ int main(int argc, char* argv[])
     logos::runPluginAboutToUnload(pluginObject, kUnloadGraceMs);
 
     delete pluginObject;
+    // The surface session outlives the plugin (the plugin's items live in
+    // its window) and goes before the application does.
+    if (surfaceShutdown) surfaceShutdown();
     return rc;
 }
