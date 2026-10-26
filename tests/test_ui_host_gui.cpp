@@ -20,6 +20,7 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QImage>
 #include <QMetaObject>
 #include <QRegularExpression>
 #include <QSignalSpy>
@@ -27,6 +28,7 @@
 #include <QTest>
 
 #include "LogosQmlBridge.h"
+#include "SurfaceHostSession.h"
 #include "ViewModuleHost.h"
 
 namespace {
@@ -180,6 +182,75 @@ private slots:
         QVERIFY(!host.spawn(QStringLiteral("x"), QStringLiteral("/nonexistent"), QString(), opts));
     }
 
+    void channelTransportSpawnRendersIntoTheHostSession()
+    {
+        // RFC-7 §2 through the production path: ViewModuleHost spawns the
+        // real ui-host with --surface-transport channel, ui-host QLibrary-
+        // loads LogosViewSurface and connects to the host session with the
+        // token it got on the token socket; the fixture renders into the
+        // window the RFC-8 header hands it; a frame lands here.
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString journalPath = dir.filePath(QStringLiteral("journal.txt"));
+        qputenv("LOGOS_TEST_GUI_JOURNAL", journalPath.toUtf8());
+
+        logos::surface::SurfaceHostSession session;
+        QVERIFY(session.listen());
+        session.configure(QSize(160, 120), 1.0, true);
+
+        ViewModuleHost host;
+        QSignalSpy readySpy(&host, &ViewModuleHost::ready);
+        ViewSpawnOptions opts;
+        opts.surfaceTransport = QStringLiteral("channel");
+        opts.surfaceSocket = session.serverName();
+        QVERIFY(host.spawn(QStringLiteral("gui_fixture"), QStringLiteral(FIXTURE_PLUGIN_GUI),
+                           QStringLiteral("test-token"), opts));
+        QVERIFY(host.isGui());
+        // The compositor-equivalent: expect the token BEFORE the child can
+        // connect (it first has to read the token socket).
+        session.expect(host.surfaceToken(), host.processId());
+
+        QSignalSpy frameSpy(&session, &logos::surface::SurfaceHostSession::frameReady);
+        QVERIFY2(readySpy.count() > 0 || readySpy.wait(20000), "ui-host never reported READY");
+        QVERIFY(host.surfaceTokenConfirmed());
+        QVERIFY2(frameSpy.count() > 0 || frameSpy.wait(15000), "no frame arrived over the channel");
+        QCOMPARE(session.transport(), QStringLiteral("channel-shm"));
+        logos::surface::HostSlot* slot = session.takeReadyForDisplay();
+        QVERIFY(slot);
+        const QImage img = slot->image();
+        QCOMPARE(img.size(), QSize(160, 120));
+        QCOMPARE(QColor(img.pixel(80, 60)), QColor(0x33, 0x66, 0x99));
+        session.frameSwapped();
+
+        host.stop();
+        qunsetenv("LOGOS_TEST_GUI_JOURNAL");
+        QFile f(journalPath);
+        QVERIFY(f.open(QIODevice::ReadOnly | QIODevice::Text));
+        const QStringList journal = QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        qInfo().noquote() << "[channel] journal=" << journal.join(QLatin1Char(','));
+        QVERIFY(journal.contains(QStringLiteral("app gui")));
+        // At initLogos the session may or may not have been welcomed yet,
+        // so the fixture sees either the family or the negotiated name.
+        bool sawSurface = false;
+        for (const QString& e : journal)
+            if (e == QLatin1String("surface channel") || e == QLatin1String("surface channel-shm")) sawSurface = true;
+        QVERIFY2(sawSurface, "the fixture did not get a window from LogosViewSurface");
+        QVERIFY(journal.contains(QStringLiteral("surface-rendered")));
+        QVERIFY2(!journal.contains(QStringLiteral("window-exposed")), "the fixture must not open its own window");
+    }
+
+    void plainGuiSpawnOffersNoSurface()
+    {
+        // --gui without a transport: the RFC-8 table is absent and the module
+        // falls back to its own window (RFC-8 Compatibility).
+        ViewSpawnOptions opts;
+        opts.gui = true;
+        const Run r = runOne(opts, /*waitForWindow=*/true);
+        QVERIFY(r.ready);
+        QCOMPARE(r.valueOf(QStringLiteral("surface")), QStringLiteral("none"));
+        QVERIFY(r.has(QStringLiteral("window-exposed")));
+    }
+
     void tokensAreUniquePerSpawn()
     {
         ViewSpawnOptions opts;
@@ -210,5 +281,7 @@ private slots:
     }
 };
 
-QTEST_GUILESS_MAIN(TestUiHostGui)
+// QGuiApplication (offscreen): the channel test reads a frame as a QImage and
+// the host session is what Basecamp runs on its GUI thread.
+QTEST_MAIN(TestUiHostGui)
 #include "test_ui_host_gui.moc"

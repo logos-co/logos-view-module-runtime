@@ -9,6 +9,8 @@
 //   app <gui|core>                 qobject_cast<QGuiApplication*>(qApp) != nullptr
 //   app-id <desktopFileName|->     QGuiApplication::desktopFileName() at initLogos
 //   window-exposed                 the QQuickWindow reached isExposed()
+//   surface <transport|none>       what LogosViewSurface::window() offered (RFC-8)
+//   surface-rendered               the runtime-provided window rendered a frame
 //   quit-on-last-window <0|1>      QGuiApplication::quitOnLastWindowClosed()
 //   dtor                           the plugin was destroyed (ui-host unwound)
 //
@@ -17,9 +19,14 @@
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QObject>
+#include <QPainter>
+#include <QQuickItem>
+#include <QQuickPaintedItem>
 #include <QQuickWindow>
 #include <QTimer>
 #include <QtPlugin>
+
+#include <logos/view_surface.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -30,6 +37,18 @@
 class LogosAPI;
 Q_DECLARE_OPAQUE_POINTER(LogosAPI*)
 Q_DECLARE_METATYPE(LogosAPI*)
+
+// Fills the surface's root item with a colour (software scene graph).
+class QQuickRectangleProbe : public QQuickPaintedItem {
+public:
+    explicit QQuickRectangleProbe(QQuickItem* root) : QQuickPaintedItem(root)
+    {
+        setSize(root->size());
+        QObject::connect(root, &QQuickItem::widthChanged, this, [this, root] { setWidth(root->width()); });
+        QObject::connect(root, &QQuickItem::heightChanged, this, [this, root] { setHeight(root->height()); });
+    }
+    void paint(QPainter* p) override { p->fillRect(boundingRect(), QColor(0x33, 0x66, 0x99)); }
+};
 
 namespace {
 
@@ -68,6 +87,24 @@ public:
         // No GPU in the test sandbox: the software scene graph renders
         // everywhere the offscreen platform does.
         QQuickWindow::setGraphicsApi(QSGRendererInterface::Software);
+
+        // RFC-8: a runtime that offers a SurfaceTransport publishes the
+        // window to render into; an old one publishes nothing and the
+        // module opens its own, exactly as before.
+        if (QQuickWindow* surface = LogosViewSurface::window()) {
+            journal("surface " + LogosViewSurface::transport().toUtf8());
+            auto* fill = new QQuickRectangleProbe(LogosViewSurface::rootItem());
+            Q_UNUSED(fill);
+            QObject::connect(surface, &QQuickWindow::afterRendering, this, [this] {
+                if (!m_rendered) {
+                    m_rendered = true;
+                    journal("surface-rendered");
+                }
+            });
+            return;
+        }
+        journal("surface none");
+
         m_window = std::make_unique<QQuickWindow>();
         m_window->setTitle(QStringLiteral("gui fixture"));
         m_window->resize(160, 120);
@@ -94,6 +131,7 @@ public:
 
 private:
     std::unique_ptr<QQuickWindow> m_window;
+    bool m_rendered = false;
 };
 
 #include "test_gui_fixture.moc"
