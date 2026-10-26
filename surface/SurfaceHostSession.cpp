@@ -152,11 +152,12 @@ void SurfaceHostSession::onMessage(const Header& header, const QByteArray& paylo
         Welcome w;
         w.accepted = 1; w.slotKind = m_kind; w.slotCount = kSlotCount;
         m_channel->send(MessageType::Welcome, w.encode());
-        if (m_configured) { m_geometryDirty = true; ++m_generation; sendGeometry(); }
+        if (m_configured) { ++m_generation; sendGeometry(); }
         break;
     }
     case MessageType::FrameWanted:
-        m_wanted = true;
+        // Informational since the standing credit: the view has demand and no
+        // credit, which means the ring is full until the host paints.
         maybeGrant();
         break;
     case MessageType::FrameReady:
@@ -213,7 +214,6 @@ void SurfaceHostSession::onHello(const QByteArray& payload)
     emit transportChanged();
 
     if (m_configured) {
-        m_geometryDirty = true;
         ++m_generation;
         sendGeometry();
     }
@@ -246,7 +246,6 @@ void SurfaceHostSession::configure(const QSize& logicalSize, qreal devicePixelRa
 
     if (geometryChanged) {
         ++m_generation;
-        m_geometryDirty = true;
         if (m_connected) sendGeometry();
     } else if (visibilityChanged && m_connected) {
         Configure c;
@@ -337,15 +336,29 @@ attached:
 
 // ── Credits and frames ─────────────────────────────────────────────────────
 
+// A credit is a permission, not a request (RFC-7 §5): the host hands the
+// view one as soon as a slot is free, and the view spends it only when its
+// scene changes. So while the host paints frame k the view already holds the
+// slot for k+1 and renders it the moment it has something to draw, with no
+// round trip on the critical path; an idle view holds its credit and costs
+// nothing. The ring bounds the pipeline: Displayed + Granted + one spare.
+// FrameWanted is now informational (the view says so when it has demand and
+// no credit); the grant condition does not depend on it.
 void SurfaceHostSession::maybeGrant()
 {
     if (!m_connected || !m_channel || !m_configured) return;
     if (!m_visible) return;
     if (m_outstandingCredit != 0) return;
-    if (!(m_wanted || m_geometryDirty || !m_shownOnce)) return;
     int free = -1;
     for (uint32_t i = 0; i < kSlotCount; ++i) {
-        if (m_slots[i].state == SlotState::Free && m_slots[i].generation == m_generation) { free = int(i); break; }
+        const Entry& e = m_slots[i];
+        if (e.generation != m_generation) continue;
+        // A frame the host has not painted yet means the view is ahead of the
+        // host; the next credit waits for that paint, so the view renders one
+        // frame per host paint instead of racing ahead and being superseded
+        // (RFC-7 §5: the view never renders frames the host cannot show).
+        if (e.state == SlotState::Ready) return;
+        if (e.state == SlotState::Free && free < 0) free = int(i);
     }
     if (free < 0) return;
 
@@ -356,8 +369,8 @@ void SurfaceHostSession::maybeGrant()
     m_slots[free].state = SlotState::Granted;
     m_grantedSlot = free;
     m_outstandingCredit = r.credit;
-    m_wanted = false;
-    m_geometryDirty = false;
+    m_grantClock.start();
+    if (m_readyClock.isValid()) qCDebug(lcSurfaceHost, "grant slot %d: %.1f ms after the last FrameReady", free, m_readyClock.nsecsElapsed() / 1e6);
     m_channel->send(MessageType::FrameRequest, r.encode(), m_generation);
 }
 
@@ -383,9 +396,11 @@ void SurfaceHostSession::onFrameReady(const Header& header, const QByteArray& pa
     }
     e.state = SlotState::Ready;
     e.frameIndex = ++m_frameCounter;
+    qCDebug(lcSurfaceHost, "frame %llu in slot %u: grant->ready %.1f ms", (unsigned long long)e.frameIndex, m.slot, m_grantClock.nsecsElapsed() / 1e6);
     m_outstandingCredit = 0;
     m_grantedSlot = -1;
     ++m_framesReceived;
+    m_readyClock.start();
     emit frameReady();
     // The view may already want the next one.
     maybeGrant();
@@ -404,7 +419,7 @@ HostSlot* SurfaceHostSession::takeReadyForDisplay()
     if (!m_slots[newest].slot->acquireForRead()) {
         if (m_slots[newest].slot->isAbandoned()) {
             // Reallocate on the GUI thread; this frame is lost.
-            QMetaObject::invokeMethod(this, [this] { if (m_connected) { ++m_generation; m_geometryDirty = true; sendGeometry(); } },
+            QMetaObject::invokeMethod(this, [this] { if (m_connected) { ++m_generation; sendGeometry(); } },
                                       Qt::QueuedConnection);
         }
         return nullptr;
@@ -419,7 +434,10 @@ HostSlot* SurfaceHostSession::takeReadyForDisplay()
     m_oldDisplayed.reset();
     m_slots[newest].state = SlotState::Displayed;
     m_displayed = newest;
-    m_shownOnce = true;
+    // The frame the view was ahead by is being painted: the view may start on
+    // the next one now rather than after this paint finishes. Queued, since
+    // this runs on the render thread and the socket lives on the session's.
+    QMetaObject::invokeMethod(this, &SurfaceHostSession::maybeGrant, Qt::QueuedConnection);
     return m_slots[newest].slot.get();
 }
 
@@ -493,7 +511,6 @@ void SurfaceHostSession::dropConnection()
     m_connected = false;
     m_outstandingCredit = 0;
     m_grantedSlot = -1;
-    m_wanted = false;
     // Keep the displayed slot's storage: the host goes on painting the last
     // frame until the module is re-spawned or the item detaches.
     for (uint32_t i = 0; i < kSlotCount; ++i) {

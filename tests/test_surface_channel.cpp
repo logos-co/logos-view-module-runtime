@@ -8,7 +8,8 @@
 //     read as a QImage, over channel-shm;
 //   * geometry is host-authoritative: a Configure bumps the generation and
 //     the next frame has the new size; a stale FrameReady is not displayed;
-//   * at most one credit is outstanding; every displayed slot is Released
+//   * at most one credit is outstanding (a standing one: granted as soon as a
+//     slot is free, spent only on demand); every displayed slot is Released
 //     after frameSwapped(); a hidden surface gets no credits;
 //   * a view that asks for its window late still gets the held credit;
 //   * input of every kind is replayed as the matching QEvent in the view;
@@ -226,8 +227,8 @@ private slots:
 
     void creditsAreSingleAndSlotsAreReleased()
     {
-        // An animating view asks for frames (FrameWanted); the host grants one
-        // credit at a time and releases every slot it has finished showing.
+        // An animating view spends each credit as soon as it holds one; the host
+        // grants one at a time and releases every slot it has finished showing.
         Rig rig;
         QVERIFY(rig.up(QSize(64, 64), QStringLiteral("#ff00ff"), 0, /*animate=*/true));
         const uint32_t generation = rig.session.generation();
@@ -249,6 +250,23 @@ private slots:
         QVERIFY2(rig.session.releasesSent() >= frames - 1,
                  qPrintable(QStringLiteral("releases %1 frames %2").arg(rig.session.releasesSent()).arg(frames)));
         QCOMPARE(rig.session.generation(), generation);   // no geometry change happened
+    }
+
+    void idleViewHoldsItsCreditWithoutRendering()
+    {
+        // The standing credit must not turn into a render loop: a view whose
+        // scene does not change keeps the credit it was handed after its
+        // first frame and sends nothing more.
+        Rig rig;
+        QVERIFY(rig.up(QSize(64, 64)));
+        QVERIFY(rig.present());
+        QTest::qWait(300);   // let the post-frame grant land
+        const int before = rig.session.framesReceived();
+        QCOMPARE(rig.session.outstandingCredit() != 0, true);   // the view holds a credit
+        QSignalSpy ready(&rig.session, &SurfaceHostSession::frameReady);
+        QVERIFY(!ready.wait(700));
+        QCOMPARE(rig.session.framesReceived(), before);
+        QCOMPARE(rig.session.outstandingCredit() != 0, true);   // still held, still unspent
     }
 
     void hiddenSurfaceGetsNoCredits()

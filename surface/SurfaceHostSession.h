@@ -15,6 +15,7 @@
 #include "SurfaceExport.h"
 #include "SurfaceProtocol.h"
 
+#include <QElapsedTimer>
 #include <QObject>
 #include <QPointer>
 #include <QSize>
@@ -136,7 +137,6 @@ private:
     bool m_visible = false;
     bool m_configured = false;
     uint32_t m_generation = 0;
-    bool m_geometryDirty = false;
 
     std::array<Entry, kSlotCount> m_slots;
     std::unique_ptr<HostSlot> m_oldDisplayed;   // last frame of a previous generation
@@ -144,9 +144,9 @@ private:
 
     uint32_t m_creditCounter = 0;
     uint32_t m_outstandingCredit = 0;
+    QElapsedTimer m_grantClock;        // debug: grant -> FrameReady round trip
+    QElapsedTimer m_readyClock;        // debug: FrameReady -> next grant
     int m_grantedSlot = -1;
-    bool m_wanted = false;
-    bool m_shownOnce = false;
     uint64_t m_frameCounter = 0;
 
     int m_releasesSent = 0;

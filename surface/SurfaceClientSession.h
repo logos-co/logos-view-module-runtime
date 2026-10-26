@@ -8,6 +8,7 @@
 #include "SurfaceExport.h"
 #include "SurfaceProtocol.h"
 
+#include <QElapsedTimer>
 #include <QObject>
 #include <QString>
 #include <array>
@@ -78,6 +79,8 @@ private:
     uint32_t m_credit = 0;
     uint32_t m_creditSlot = 0;
     uint32_t m_creditGeneration = 0;
+    uint32_t m_renderedGeneration = 0;  // generation of the last frame sent; 0 = none yet
+    QElapsedTimer m_creditClock;      // debug: FrameRequest received -> FrameReady sent
     bool m_wantedSent = false;
     uint64_t m_frameIndex = 0;
     int m_framesSent = 0;

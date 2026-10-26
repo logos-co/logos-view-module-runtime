@@ -139,7 +139,12 @@ void SurfaceClientSession::onMessage(const Header& header, const QByteArray& pay
         m_creditSlot = r.slot;
         m_creditGeneration = header.generation;
         m_wantedSent = false;
-        QMetaObject::invokeMethod(this, &SurfaceClientSession::tryRender, Qt::QueuedConnection);
+        m_creditClock.start();
+        // A credit is permission to render, not an order (RFC-7 §5): spend it
+        // now only if the scene has changed since the last frame or nothing of
+        // this generation has been shown yet; otherwise hold it until demand.
+        if (m_producer->hasDemand() || m_renderedGeneration != m_generation)
+            QMetaObject::invokeMethod(this, &SurfaceClientSession::tryRender, Qt::QueuedConnection);
         break;
     }
     case MessageType::Release:
@@ -191,6 +196,7 @@ void SurfaceClientSession::tryRender()
     if (!m_producer->ensureReady()) return;
     if (!openSlot(e)) return;
 
+    const qint64 beforeRenderNs = m_creditClock.nsecsElapsed();
     if (!m_producer->renderFrame(e.slot.get())) {
         qCWarning(lcSurfaceClient) << "frame render failed; keeping credit";
         return;
@@ -203,8 +209,10 @@ void SurfaceClientSession::tryRender()
     fr.dmgH = uint32_t(e.descriptor.pixelSize.height());
     fr.frameIndex = ++m_frameIndex;
     m_haveCredit = false;
+    m_renderedGeneration = m_generation;
     m_channel->send(MessageType::FrameReady, fr.encode(), m_generation);
     ++m_framesSent;
+    qCDebug(lcSurfaceClient, "frame %llu: credit->render %.1f ms, render %.1f ms", (unsigned long long)fr.frameIndex, beforeRenderNs / 1e6, (m_creditClock.nsecsElapsed() - beforeRenderNs) / 1e6);
     // More to show already? Ask for the next credit right away.
     if (m_producer->hasDemand()) onDemand();
 }
