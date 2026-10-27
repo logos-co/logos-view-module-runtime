@@ -239,6 +239,12 @@ public:
     // means moduleName, which is what ui-host uses for a plugin without a .rep.
     void setViewModuleSocket(const QString& moduleName, const QString& socketName,
                              const QString& sourceName = QString());
+    // For a backend running as a core module: it accepts a connection only
+    // after the one-time `secret` its view_endpoint() issued. A separate
+    // overload, not a defaulted parameter, so hosts built against the
+    // three-argument form keep linking.
+    void setViewModuleSocket(const QString& moduleName, const QString& socketName,
+                             const QString& sourceName, const QString& secret);
 
     // ── Intent host-side API — NOT reachable from QML ────────────────────
     //
@@ -366,6 +372,7 @@ private:
     QJSValue enumsFor(const QString& sourceName, QJSEngine* engine) const;
     QJSValue toJsValue(const QVariant& v) const;
     void failIntentLocally(const QString& requestId, const QString& errorCode);
+    void warnCoreAccessDeprecated(const char* call);
 
     LogosAPI* m_logosAPI;
 
@@ -396,6 +403,7 @@ private:
     // Per-view-module state
     QMap<QString, QString> m_viewModuleSockets;
     QMap<QString, QString> m_viewModuleSources;
+    QMap<QString, QString> m_viewModuleSecrets;
     QMap<QString, QRemoteObjectNode*> m_replicaNodes;
     QMap<QString, QRemoteObjectReplica*> m_replicas;
     QMap<QString, QAbstractItemModelReplica*> m_modelReplicas;

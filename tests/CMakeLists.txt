@@ -1,3 +1,21 @@
+# A host that has not opted out must be told ui-host is deprecated: a file
+# naming ViewModuleHost has to FAIL with deprecation warnings as errors.
+try_compile(_ui_host_deprecation_silent
+    SOURCE_FROM_CONTENT check.cpp
+        "#include \"ViewModuleHost.h\"\nvoid use(ViewModuleHost*);\nint main() { return 0; }\n"
+    CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${PROJECT_SOURCE_DIR}/include"
+    COMPILE_DEFINITIONS -Werror=deprecated-declarations
+    LINK_LIBRARIES Qt6::Core
+    OUTPUT_VARIABLE _ui_host_deprecation_log)
+if(_ui_host_deprecation_silent)
+    message(FATAL_ERROR "ViewModuleHost is not marked deprecated for hosts without LOGOS_UI_HOST_ALLOWED")
+elseif(NOT _ui_host_deprecation_log MATCHES "ui-host is deprecated")
+    message(FATAL_ERROR "the deprecation check failed for another reason:\n${_ui_host_deprecation_log}")
+endif()
+
+# The tests cover ui-host too, which is deprecated but still supported.
+add_compile_definitions(LOGOS_UI_HOST_ALLOWED)
+
 # Unit tests for logos-view-module-runtime (Qt Test)
 
 add_executable(test_logos_qml_bridge
@@ -303,3 +321,18 @@ set_target_properties(test_ui_host_unload PROPERTIES
 )
 
 add_test(NAME UiHostUnloadTests COMMAND test_ui_host_unload)
+
+# A view whose backend is a core module learns when that backend's process dies.
+add_executable(test_view_module_backend_lost test_view_module_backend_lost.cpp)
+target_link_libraries(test_view_module_backend_lost PRIVATE
+    logos_view_module_runtime
+    Qt6::Core
+    Qt6::Network
+    Qt6::Test
+    Qt6::Qml
+    Qt6::RemoteObjects
+    logos-qt-host::logos_qt_host
+    logos-cpp-sdk::logos_headers
+    logos-protocol::logos_protocol
+)
+add_test(NAME ViewModuleBackendLostTests COMMAND test_view_module_backend_lost)

@@ -1,5 +1,7 @@
 #include "LogosQmlBridge.h"
 
+#include <QLocalSocket>
+
 #include <QLoggingCategory>
 #include "LogosIntent.h"
 #include "LogosIntentRouter.h"
@@ -122,6 +124,23 @@ LogosQmlBridge* LogosQmlBridge::forConsumer(const logos::ConsumerIdentity& consu
     // together and callers keep deleting exactly one object.
     consumer.api->setParent(bridge);
     return bridge;
+}
+
+// QML apps are to reach logos core only through their backend module. A
+// bridge built without a LogosAPI (a view whose backend is a module) never
+// gets here. Once per bridge, i.e. per app; the flag is a dynamic property so
+// the class layout (ABI) is unchanged.
+void LogosQmlBridge::warnCoreAccessDeprecated(const char* call)
+{
+    static const char* const kWarned = "_logosWarnedCoreAccess";
+    if (property(kWarned).toBool()) return;
+    setProperty(kWarned, true);
+    qCWarning(lcQmlBridge).noquote()
+        << QStringLiteral("DEPRECATED: %1 calls logos core from QML (logos.%2). Move the call "
+                          "into a backend module (\"backend\": \"module\" in metadata.json); "
+                          "QML access to logos core is removed in the next breaking release.")
+               .arg(identity().isEmpty() ? QStringLiteral("this app") : identity(),
+                    QLatin1String(call));
 }
 
 QString LogosQmlBridge::identity() const
@@ -335,6 +354,7 @@ QString LogosQmlBridge::callModule(const QString& module,
 
     if (!m_logosAPI)
         return QStringLiteral("{\"error\":\"LogosAPI not available\"}");
+    warnCoreAccessDeprecated("callModule");
 
     LogosAPIClient* client = m_logosAPI->getClient(module);
     if (!client)
@@ -423,6 +443,7 @@ void LogosQmlBridge::callModuleAsync(const QString& module,
         invokeCallback("{\"error\":\"LogosAPI not available\"}");
         return;
     }
+    warnCoreAccessDeprecated("callModuleAsync");
 
     LogosAPIClient* client = m_logosAPI->getClient(module);
     if (!client) {
@@ -796,15 +817,25 @@ void LogosQmlBridge::setViewModuleSocket(const QString& moduleName,
                                          const QString& socketName,
                                          const QString& sourceName)
 {
+    setViewModuleSocket(moduleName, socketName, sourceName, QString());
+}
+
+void LogosQmlBridge::setViewModuleSocket(const QString& moduleName,
+                                         const QString& socketName,
+                                         const QString& sourceName,
+                                         const QString& secret)
+{
     const QString source = sourceName.isEmpty() ? moduleName : sourceName;
     auto currentIt = m_viewModuleSockets.constFind(moduleName);
     if (currentIt != m_viewModuleSockets.cend() && currentIt.value() == socketName
-        && m_viewModuleSources.value(moduleName) == source) {
+        && m_viewModuleSources.value(moduleName) == source
+        && m_viewModuleSecrets.value(moduleName) == secret) {
         return;
     }
     dropViewModuleCaches(moduleName);
     m_viewModuleSockets[moduleName] = socketName;
     m_viewModuleSources[moduleName] = source;
+    m_viewModuleSecrets[moduleName] = secret;
 }
 
 void LogosQmlBridge::notifyViewModuleCrashed(const QString& moduleName)
@@ -835,6 +866,7 @@ bool LogosQmlBridge::onModuleEvent(const QString& moduleName, const QString& eve
         qCWarning(lcQmlBridge) << "onModuleEvent: LogosAPI not available";
         return false;
     }
+    warnCoreAccessDeprecated("onModuleEvent");
     if (moduleName.isEmpty() || eventName.isEmpty()) {
         qCWarning(lcQmlBridge) << "onModuleEvent: empty module or event name"
                    << moduleName << eventName;
@@ -951,7 +983,34 @@ QRemoteObjectNode* LogosQmlBridge::getOrCreateNode(const QString& moduleName)
     }
 
     auto* node = new QRemoteObjectNode(this);
-    node->connectToNode(QUrl(QStringLiteral("local:") + socketIt.value()));
+    const QString secret = m_viewModuleSecrets.value(moduleName);
+    if (secret.isEmpty()) {
+        node->connectToNode(QUrl(QStringLiteral("local:") + socketIt.value()));
+    } else {
+        auto* socket = new QLocalSocket(node);
+        QObject::connect(socket, &QLocalSocket::connected, socket, [socket, secret]() {
+            socket->write(secret.toUtf8() + '\n');
+        });
+        QObject::connect(socket, &QLocalSocket::readyRead, socket, [this, socket, node, moduleName]() {
+            if (socket->bytesAvailable() < 3) return;
+            const QByteArray ack = socket->read(3);
+            QObject::disconnect(socket, &QLocalSocket::readyRead, socket, nullptr);
+            if (ack != "ok\n") {
+                qCWarning(lcQmlBridge) << "view module" << moduleName << "refused the connection";
+                socket->abort();
+                return;
+            }
+            node->addClientSideConnection(socket);
+            QPointer<QRemoteObjectNode> current(node);
+            QObject::connect(socket, &QLocalSocket::disconnected, this, [this, current, moduleName]() {
+                QMetaObject::invokeMethod(this, [this, current, moduleName]() {
+                    if (current && m_replicaNodes.value(moduleName) == current.data())
+                        notifyViewModuleCrashed(moduleName);
+                }, Qt::QueuedConnection);
+            });
+        });
+        socket->connectToServer(socketIt.value());
+    }
     m_replicaNodes[moduleName] = node;
     return node;
 }

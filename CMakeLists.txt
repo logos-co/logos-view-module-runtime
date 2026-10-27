@@ -62,7 +62,7 @@ add_library(logos_view_module_runtime STATIC
     include/LogosQmlBridge.h
     include/ViewModuleHost.h
     include/LogosViewPlugin.h
-    include/LogosViewReplicaFactory.h
+    include/LogosUiHostDeprecation.h
     include/LogosIntent.h
     include/LogosIntentRouter.h
 )
@@ -82,9 +82,12 @@ target_link_libraries(logos_view_module_runtime PUBLIC
 )
 
 set_target_properties(logos_view_module_runtime PROPERTIES POSITION_INDEPENDENT_CODE ON)
+# This repo implements ui-host, so it uses its own deprecated API on purpose.
+target_compile_definitions(logos_view_module_runtime PRIVATE LOGOS_UI_HOST_ALLOWED)
 
 # ── ui-host executable ──────────────────────────────────────────────────────
 add_executable(ui-host ui-host/main.cpp)
+target_compile_definitions(ui-host PRIVATE LOGOS_UI_HOST_ALLOWED)
 
 target_include_directories(ui-host PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
