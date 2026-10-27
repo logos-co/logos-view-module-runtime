@@ -17,6 +17,7 @@
 //     (test_logos_qml_bridge_dynamic covers that against a real source).
 
 #include "LogosQmlBridge.h"
+#include "logos_api.h"
 
 #include <QCoreApplication>
 #include <QJSEngine>
@@ -57,6 +58,22 @@ QJsonValue parsePayload(const QString& payload)
 }
 
 } // namespace
+
+// Every warning-or-worse message emitted while `fn` runs.
+static QStringList g_captured;
+static void captureHandler(QtMsgType type, const QMessageLogContext&, const QString& msg)
+{
+    if (type != QtDebugMsg && type != QtInfoMsg) g_captured << msg;
+}
+template <typename Fn>
+static QStringList captureWarnings(Fn fn)
+{
+    g_captured.clear();
+    const QtMessageHandler previous = qInstallMessageHandler(captureHandler);
+    fn();
+    qInstallMessageHandler(previous);
+    return g_captured;
+}
 
 class TestLogosQmlBridge : public QObject {
     Q_OBJECT
@@ -164,6 +181,47 @@ private slots:
         // Compact JSON: no embedded spaces/newlines.
         QVERIFY(!s.contains(QLatin1Char(' ')));
         QVERIFY(!s.contains(QLatin1Char('\n')));
+    }
+
+    // ── Deprecation: QML calling logos core ──────────────────────────────
+    // Warned once per bridge (= per app), and never for a bridge without a
+    // LogosAPI: that is a view whose backend is a module, the supported path.
+    void coreAccess_warnsOncePerBridge()
+    {
+        LogosAPI api(QStringLiteral("qml_only_app"));
+        LogosQmlBridge bridge(&api);
+        const QStringList warnings = captureWarnings([&] {
+            bridge.onModuleEvent(QString(), QString());
+            bridge.onModuleEvent(QString(), QString());
+            bridge.callModuleAsync(QString(), QStringLiteral("m"), {}, QJSValue(), 1);
+        });
+        const QStringList deprecated = warnings.filter(QStringLiteral("DEPRECATED"));
+        QCOMPARE(deprecated.size(), 1);
+        QVERIFY2(deprecated.first().contains(QStringLiteral("qml_only_app")), qPrintable(deprecated.first()));
+        QVERIFY2(deprecated.first().contains(QStringLiteral("logos.onModuleEvent")), qPrintable(deprecated.first()));
+    }
+
+    void coreAccess_eachBridgeWarnsItself()
+    {
+        LogosAPI apiA(QStringLiteral("app_a"));
+        LogosAPI apiB(QStringLiteral("app_b"));
+        LogosQmlBridge a(&apiA);
+        LogosQmlBridge b(&apiB);
+        const QStringList deprecated = captureWarnings([&] {
+            a.onModuleEvent(QString(), QString());
+            b.onModuleEvent(QString(), QString());
+        }).filter(QStringLiteral("DEPRECATED"));
+        QCOMPARE(deprecated.size(), 2);
+    }
+
+    void coreAccess_noWarningWithoutLogosApi()
+    {
+        LogosQmlBridge bridge(nullptr);
+        const QStringList deprecated = captureWarnings([&] {
+            bridge.callModule(QStringLiteral("m"), QStringLiteral("f"));
+            bridge.onModuleEvent(QStringLiteral("m"), QStringLiteral("e"));
+        }).filter(QStringLiteral("DEPRECATED"));
+        QVERIFY2(deprecated.isEmpty(), qPrintable(deprecated.join('\n')));
     }
 
     // ── Routing & state (no real LogosAPI) ───────────────────────────────

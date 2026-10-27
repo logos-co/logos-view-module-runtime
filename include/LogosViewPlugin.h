@@ -1,5 +1,7 @@
 #pragma once
 
+#include "LogosUiHostDeprecation.h"
+
 #include <QtPlugin>
 
 class QObject;
@@ -18,7 +20,7 @@ class QRemoteObjectHostBase;
 //   2. Performs *typed* QRemoteObject remoting against that object via
 //      enableRemoting(host) — typically by calling the templated
 //      host->enableRemoting<FooSourceAPI>(backend) overload.
-class LogosViewPlugin {
+class LOGOS_UI_HOST_DEPRECATED LogosViewPlugin {
 public:
     virtual ~LogosViewPlugin() = default;
 

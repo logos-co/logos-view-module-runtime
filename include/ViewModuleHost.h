@@ -1,12 +1,14 @@
 #pragma once
 
+#include "LogosUiHostDeprecation.h"
+
 #include <QObject>
 #include <QProcess>
 #include <QString>
 
 class QLocalServer;
 
-class ViewModuleHost : public QObject {
+class LOGOS_UI_HOST_DEPRECATED ViewModuleHost : public QObject {
     Q_OBJECT
 public:
     explicit ViewModuleHost(QObject* parent = nullptr);
