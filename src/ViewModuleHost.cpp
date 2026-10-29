@@ -19,6 +19,13 @@
 // with QT_LOGGING_RULES="logos.viewhost.debug=true" when a child misbehaves.
 Q_LOGGING_CATEGORY(lcViewHost, "logos.viewhost", QtWarningMsg)
 
+namespace {
+// How long ui-host gets from the stop request to kill(). It spends up to its
+// kUnloadGraceMs (10s) on the view's aboutToUnload() and needs the rest for its
+// own teardown, so keep this comfortably above that.
+constexpr int kStopWindowMs = 12000;
+} // namespace
+
 #ifdef Q_OS_WIN
 namespace {
 // Kill-on-close job, as logos-container-subprocess uses for logos_host: when this
@@ -246,12 +253,12 @@ void ViewModuleHost::stop()
     // logos-container-subprocess, which also replaces (not supplements) its
     // no-op request_exit() with PostThreadMessage(WM_QUIT).
     // Measured against the shipped ui-host.exe: terminate() left it alive for
-    // the full 3000 ms; WM_QUIT exited it in 8 ms with code 0.
+    // the full window (3000 ms at the time); WM_QUIT exited it in 8 ms with code 0.
     bool posted = false;
     if (m_mainThreadId != 0 && process->state() == QProcess::Running)
         posted = ::PostThreadMessageW(m_mainThreadId, WM_QUIT, 0, 0);
     if (posted) {
-        if (process->waitForFinished(3000))
+        if (process->waitForFinished(kStopWindowMs))
             return;
         qCWarning(lcViewHost) << "WM_QUIT not honoured by" << m_moduleName;
     } else {
@@ -264,7 +271,7 @@ void ViewModuleHost::stop()
 #else
     process->terminate();
 
-    if (!process->waitForFinished(3000)) {
+    if (!process->waitForFinished(kStopWindowMs)) {
         qCWarning(lcViewHost) << "process did not exit gracefully, killing" << m_moduleName;
         process->kill();
         process->waitForFinished(1000);

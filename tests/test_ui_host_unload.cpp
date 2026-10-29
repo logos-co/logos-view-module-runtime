@@ -82,7 +82,7 @@ private:
 
         QElapsedTimer t;
         t.start();
-        host.stop();               // terminate() + waitForFinished(3000) + kill()
+        host.stop();               // terminate() + waitForFinished(12000) + kill()
         r.stopMs = t.elapsed();
 
         // stop() blocks until the child is reaped, so finished() has already
@@ -186,7 +186,7 @@ private slots:
     // 3. Asynchronous, never signals: a grace period, not a veto.
     //
     // The host must give up and proceed. Critically it must do so from within
-    // its own budget: ViewModuleHost::stop() hard-kills at 3000ms, so a grace
+    // its own budget: ViewModuleHost::stop() hard-kills at 12000ms, so a grace
     // period that overran would show up here as a non-zero exit code, not as a
     // slow pass.
     // ---------------------------------------------------------------------
@@ -215,13 +215,12 @@ private slots:
 
         // ...and it exited cleanly rather than being hard-killed by the parent.
         // This is the assertion that the grace period FITS the budget it was
-        // carved out of. A 3000ms grace here (logos_host's constant) would
-        // consume ViewModuleHost::stop()'s whole 3000ms window and turn this
-        // into a kill.
+        // carved out of. A grace at or past ViewModuleHost::stop()'s 12000ms
+        // window would turn this into a kill.
         QCOMPARE(r.exitCode, 0);
-        QVERIFY2(r.stopMs < 3000,
+        QVERIFY2(r.stopMs < 12000,
                  qPrintable(QStringLiteral("teardown took %1ms, at or past the "
-                                           "parent's 3000ms hard-kill threshold")
+                                           "parent's 12000ms hard-kill threshold")
                                 .arg(r.stopMs)));
     }
 
@@ -231,7 +230,7 @@ private slots:
     // This is what separates "waited and was released" from "waited out the
     // deadline" WITHOUT trusting a clock: both runs heartbeat at the same
     // interval, so more ticks means more time. The hanging plugin must
-    // accumulate strictly more of them, because its wait ends at the 2000ms
+    // accumulate strictly more of them, because its wait ends at the 10000ms
     // deadline while the other's ends at its ~1000ms completion.
     //
     // If a future change made "finished" and "gave up" indistinguishable --

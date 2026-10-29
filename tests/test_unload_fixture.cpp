@@ -58,12 +58,12 @@ void journal(const char* entry)
 }
 
 // How often the heartbeat writes while the host is waiting. Small enough that
-// the ~1s completion and the 2s deadline land far apart in tick counts, which
+// the ~1s completion and the 10s deadline land far apart in tick counts, which
 // is what lets the test compare the two runs instead of trusting a clock.
 constexpr int kHeartbeatMs = 100;
 
 // When the "finishes" mode reports completion. Comfortably inside ui-host's
-// 2s grace period, and comfortably outside the noise of a single heartbeat.
+// 10s grace period, and comfortably outside the noise of a single heartbeat.
 constexpr int kWorkMs = 1000;
 
 } // namespace
